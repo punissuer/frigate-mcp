@@ -4,7 +4,7 @@
 
 The user approved the spec, test boundary, and nine-ticket implementation breakdown. All nine tickets were published to [punissuer/frigate-mcp](https://github.com/punissuer/frigate-mcp/issues) with `ready-for-agent` labels and native GitHub blocking relationships.
 
-**Issues #1 through #8 are implemented, committed, and pushed to `main`.** The working tree is clean. The next agreed step is **[#9: Secure Streamable HTTP and release acceptance](https://github.com/punissuer/frigate-mcp/issues/9)**, which has not been started.
+**Issues #1 through #9 are implemented, committed, and pushed to `main`.** The working tree is clean. The read-only v1 surface is complete: fourteen read-only tools over stdio and Streamable HTTP, with durable restart/replay acceptance.
 
 The user reported: “afaict it works.” This is positive feedback, not a recorded live-Frigate test result. No live NVR or provider credentials were used by the assistant.
 
@@ -12,7 +12,7 @@ The user reported: “afaict it works.” This is positive feedback, not a recor
 
 1. `README.md`: current usage, configuration, authentication, camera scope, limitations, compatibility, and durable integration.
 2. `docs/spec.md`: approved overall design and dependency graph.
-3. GitHub issue #9: its full acceptance criteria before implementing the next slice.
+3. `README.md` and this document: the release documentation for both transports, secret injection, CA trust, camera scope, policy defaults, retention, quotas and TTL, typed results, and known compatibility limitations.
 4. `src/contract.ts`, `src/frigate.ts`, `src/auth.ts`, `src/http.ts`, and `src/durable.ts`: the existing public contracts and integration boundary.
 
 ## What issues #1 and #2 deliver
@@ -59,6 +59,15 @@ Camera scope (issue #2):
 
 Image bytes never enter a structured result, are never printed with `text()`, and are never logged; the bridge keeps the image block inside the preserved MCP content array so a script can select it and forward it with code mode's `image()`.
 
+Remote transport and release (issue #9):
+
+- `FRIGATE_MCP_TRANSPORT=http` starts the Streamable HTTP endpoint with the official SDK. Every request — tool calls, session operations, and resource reads — must carry `Authorization: Bearer <FRIGATE_MCP_HTTP_SECRET>`, compared in constant time; a missing and a wrong secret get the same answer.
+- The MCP secret is high-entropy, distinct from the Frigate credential, and never enters the sandbox, a tool argument, or a log line. Sessions are bounded in count and lifetime, request bodies are bounded in size, and unknown sessions or paths get sanitized answers.
+- The endpoint binds loopback by default; a non-loopback bind is an explicit operator decision and must sit behind TLS at the service or a trusted ingress. Frigate's internal port must never be published.
+- The camera scope, the tool contracts, and every policy limit are identical on both transports: a remote client can do exactly what a local one can, and no more. The shared code-mode suite runs against the remote transport as well.
+- The durable bridge gained `connectFrigateHttp`, which keeps the tool contracts, the manifest validation, and the replay policy unchanged.
+- The release adds an opt-in live check (`npm run test:live`) that only reads health, version, statistics, and configuration, is skipped without `FRIGATE_LIVE_API_ROOT`, and never touches a real NVR in default CI. Two runnable code-mode examples cover discovery, bounded cross-camera reads, image forwarding, an unavailable feature with a fallback, and clip delivery.
+
 Restart and recovery (issue #8):
 
 - The recovery test runs a deterministic investigation in a child process against persistent SQLite durable storage, kills that process with SIGKILL while a nested call is in flight, reopens the same storage, reinstalls the bridge and the code-mode extension, and resumes the pending run.
@@ -95,6 +104,7 @@ The server rejects unsafe configuration, sanitizes startup and upstream errors, 
 | `src/config.ts` | Operator options/env parsing; exact API-root handling; HTTP opt-in; credential, camera-scope, CA, and policy validation |
 | `src/http.ts` | Minimal HTTP(S) client: TLS verification, custom CA, no redirects, byte caps, cancellation, transport error kinds, streaming download to disk |
 | `src/artifacts.ts` | Private, quota-bounded, expiring artifact store with atomic publication and cleanup |
+| `src/server-http.ts` | Streamable HTTP transport: bearer authentication, Origin validation, bounded sessions and requests |
 | `src/auth.ts` | Session manager: managed `/login`, cookie handling, serialized refresh, single authentication retry, bearer forwarding |
 | `src/contract.ts` | Zod inputs/outputs for all three tools, sanitization schemas, release classification, expected MCP manifests |
 | `src/frigate.ts` | Bounded upstream reads, retries, status/discovery aggregation, camera scoping, sanitized errors, global concurrency admission |
@@ -113,6 +123,10 @@ The server rejects unsafe configuration, sanitizes startup and upstream errors, 
 | `test/media.test.ts` | Image retrieval, offline fallback, scope, size cap, cancellation, and forwarding boundary tests |
 | `test/clips.test.ts` | Artifact publication, resource retrieval, quota, TTL, cleanup, and cancellation boundary tests |
 | `test/recovery.test.ts` | Crash and resume acceptance, expired artifact references, and manifest-change refusal |
+| `test/http.test.ts` | Remote transport authentication, Origin validation, session and request bounds, and the shared code-mode suite over HTTP |
+| `test/live.test.ts` | Opt-in, non-destructive live compatibility check (skipped without an API root) |
+| `examples/investigation.ts` | Discovery, bounded cross-camera reads, and image forwarding |
+| `examples/fallback-and-clip.ts` | An unavailable feature with a fallback, and evidence clip delivery |
 | `test/helpers/recovery-child.ts` | Child process that runs one investigation against persistent durable storage |
 | `examples/smoke.ts` | Reproducible offline end-to-end demonstration |
 | `.github/workflows/ci.yml` | Node 24 install, typecheck, tests, smoke, packaging, production audit |
@@ -138,7 +152,7 @@ git diff --check
 
 Results:
 
-- **94 tests passed** (22 from issue #1, 14 from issue #2, 15 from issue #3, 9 from issue #4, 11 from issue #5, 8 from issue #6, 12 from issue #7, 3 from issue #8).
+- **102 tests** (101 passed, 1 skipped: the opt-in live check). The suite runs with `--test-concurrency=1`; the earlier parallel run flaked under CPU contention.
 - Typecheck/build/smoke passed.
 - Audit reported **zero vulnerabilities**.
 - Package dry-run passed.
@@ -151,6 +165,8 @@ Issue #2 tests additionally cover successful discovery, expired external tokens,
 Issue #3 tests additionally cover event filtering and translated query parameters, millisecond/reversed/oversized interval rejection, camera scope on filters and direct lookups, truncated pages with a continuation offset, duplicate identifier removal, equal timestamps, live-page shift warnings, short-page completeness, empty intervals, missing events, role denial, malformed and oversized event responses, and identifier path-traversal rejection.
 
 Issue #4 tests additionally cover a successful semantic search with distance and source, a disabled service with an explicit fallback to `list_events`, a missing endpoint reported as unsupported, camera scope on search filters and results, an empty search, malformed upstream search data, a retried transient search failure, truncated search results, and rejected units, windows, and empty queries.
+
+Issue #9 tests additionally cover a remote client running the same read-only investigation over Streamable HTTP, the durable bridge connecting remotely without changing tool contracts, unauthenticated and wrong-secret calls, a hostile Origin, artifacts behind authentication, an oversized request body, an unknown session and a wrong path, and the shared code-mode investigation over the remote transport with the same scope rules.
 
 Issue #8 tests additionally cover a crashed investigation that resumes without repeating committed observations, an expired artifact reference failing explicitly after a restart, and the bridge refusing a changed callable manifest.
 
@@ -220,6 +236,7 @@ Use authenticated Frigate port 8971 or a trusted TLS reverse proxy. Port 5000 by
 | [#6](https://github.com/punissuer/frigate-mcp/issues/6) | Frames and event images; landed | #3 |
 | [#7](https://github.com/punissuer/frigate-mcp/issues/7) | Bounded evidence clips; landed | #3, #5 |
 | [#8](https://github.com/punissuer/frigate-mcp/issues/8) | Restart and replay acceptance; landed | #6, #7 |
+| [#9](https://github.com/punissuer/frigate-mcp/issues/9) | Secure Streamable HTTP and release acceptance; landed | #8 |
 | [#4](https://github.com/punissuer/frigate-mcp/issues/4) | Semantic event search | #3 |
 | [#5](https://github.com/punissuer/frigate-mcp/issues/5) | Reviews and recording availability | #2 |
 | [#6](https://github.com/punissuer/frigate-mcp/issues/6) | Frames and event images | #3 |
@@ -240,4 +257,4 @@ Use authenticated Frigate port 8971 or a trusted TLS reverse proxy. Port 5000 by
 - [x] Implement #6 as the next vertical slice, extending the real code-mode/stdio/HTTP-fixture tests.
 - [x] Implement #7 as the next vertical slice, extending the real code-mode/stdio/HTTP-fixture tests.
 - [x] Implement #8 as the next vertical slice, extending the real code-mode/stdio/HTTP-fixture tests.
-- [ ] Read GitHub issue #9 in full and implement it as the next vertical slice.
+- [x] Implement #9 as the final vertical slice: the Streamable HTTP transport, the shared suite over it, the examples, the opt-in live check, and the release documentation.

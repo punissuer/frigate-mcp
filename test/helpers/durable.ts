@@ -5,7 +5,7 @@ import { fauxProvider, fauxAssistantMessage, fauxToolCall } from '@earendil-work
 import { CodemodeSandbox } from '@earendil-works/pi-codemode';
 import { createRegistry, Harness, MemoryStorage } from '@earendil-works/pi-durable';
 import { createCodemodeExtension } from '@earendil-works/pi-durable/codemode';
-import { connectFrigateStdio, frigateNamespace } from '../../src/durable.js';
+import { connectFrigateHttp, connectFrigateStdio, frigateNamespace } from '../../src/durable.js';
 
 export function serverParameters(apiRoot: string, env: Record<string, string> = {}) {
   return {
@@ -21,6 +21,16 @@ export async function runScript(apiRoot: string, code: string, options: {
   env?: Record<string, string>;
 } = {}) {
   const bridge = await connectFrigateStdio(serverParameters(apiRoot, options.env));
+  return runScriptWith(bridge, code, options.beforeSubmit);
+}
+
+/** The same deterministic investigation over a remote Streamable HTTP server. */
+export async function runScriptOverHttp(url: string, secret: string, code: string) {
+  const bridge = await connectFrigateHttp({ url, secret });
+  return runScriptWith(bridge, code);
+}
+
+async function runScriptWith(bridge: Awaited<ReturnType<typeof connectFrigateStdio>>, code: string, beforeSubmit?: (pid: number | null) => Promise<void>) {
   const sandbox = new CodemodeSandbox({ memoryLimitBytes: 64 * 1024 * 1024 });
   const models = createModels();
   const faux = fauxProvider();
@@ -37,7 +47,7 @@ export async function runScript(apiRoot: string, code: string, options: {
   try {
     const root = await harness.root(context, { agent: { model: { provider: 'faux', modelId: 'faux-1' } } });
     const agent = await root.agent(context);
-    await options.beforeSubmit?.(bridge.pid);
+    await beforeSubmit?.(bridge.pid);
     const submission = await root.submit({ type: 'input', content: 'Run the predetermined investigation.' }, context);
     const settled = await submission.wait(context);
     if (settled.status !== 'done') throw new Error(`Fixture run did not settle: ${settled.status}`);

@@ -2,7 +2,7 @@
 
 Read-only Frigate MCP tools with an optional **pi-durable code-mode bridge**.
 
-Implemented: [issues #1](https://github.com/punissuer/frigate-mcp/issues/1)–[#7](https://github.com/punissuer/frigate-mcp/issues/7) — the stdio investigation surface with managed login, camera scope, bounded retries, paged event investigation, semantic search, review segments, recording availability, bounded images, and private expiring evidence artifacts. Restart acceptance tests and remote Streamable HTTP are tracked in [issues #8–#9](https://github.com/punissuer/frigate-mcp/issues). **This is not the complete v1 server.**
+Implemented: [issues #1](https://github.com/punissuer/frigate-mcp/issues/1)–[#9](https://github.com/punissuer/frigate-mcp/issues/9) — the complete read-only v1 surface: `get_system_status`, `list_cameras`, `get_capabilities`, `list_events`, `get_event`, `search_events`, `list_review_items`, `get_review_item`, `get_recording_summary`, `list_recordings`, `get_latest_frame`, `get_event_image`, `get_event_clip`, and `get_recording_clip`, over **stdio** and **Streamable HTTP**, with managed login, camera scope, bounded retries, paged event investigation, semantic search, review segments, recording availability, bounded images, private expiring evidence artifacts, and durable restart/replay acceptance.
 
 ## Develop and verify
 
@@ -18,6 +18,48 @@ npm run smoke
 The smoke command starts a controlled HTTP fixture and runs real QuickJS code mode inside a pi-durable harness. A scripted faux provider supplies the predetermined tool call; it does not contact an LLM. The script discovers the Frigate namespace and calls through the durable bridge → stdio MCP server → fixture HTTP API. Only the selected structured result reaches the simulated model. Tests also exercise ordinary MCP clients, login/session refresh, camera scope, auth failures, schema validation, cancellation, limits, retries, and transport failures.
 
 No NVR or provider credentials are required. Tests never contact a real Frigate instance or modify footage. `npm run build` produces the executable and declarations; `npm pack --dry-run` checks the distributable.
+
+## Remote Streamable HTTP server
+
+The same server can run over Streamable HTTP (legacy SSE is not supported). Start it with:
+
+```sh
+export FRIGATE_MCP_TRANSPORT=http
+export FRIGATE_API_ROOT=https://frigate.example.internal/api
+export FRIGATE_USERNAME='viewer'
+export FRIGATE_PASSWORD='<password from your secret manager>'
+export FRIGATE_MCP_HTTP_SECRET="$(openssl rand -base64 48)"
+export FRIGATE_MCP_HTTP_HOST=127.0.0.1
+export FRIGATE_MCP_HTTP_PORT=8080
+node dist/cli.js
+```
+
+| Environment variable | Default / meaning |
+| --- | --- |
+| `FRIGATE_MCP_TRANSPORT` | `stdio`; set to `http` for the Streamable HTTP endpoint |
+| `FRIGATE_MCP_HTTP_SECRET` | Required in HTTP mode. A high-entropy bearer secret, **distinct from the Frigate credential** |
+| `FRIGATE_MCP_HTTP_HOST` | `127.0.0.1`; loopback by default |
+| `FRIGATE_MCP_HTTP_PORT` | `8080` |
+| `FRIGATE_MCP_HTTP_PATH` | `/mcp` |
+| `FRIGATE_MCP_HTTP_ALLOWED_ORIGINS` | Optional comma-separated Origin allowlist; when set, a request with a different `Origin` is refused |
+| `FRIGATE_MCP_HTTP_SESSION_TTL_MS` | `1800000`, session lifetime (30 minutes) |
+| `FRIGATE_MCP_HTTP_MAX_SESSIONS` | `16`, concurrent sessions |
+| `FRIGATE_MCP_HTTP_ALLOW_NON_LOOPBACK` | Required to bind a non-loopback address |
+
+Security properties of the remote transport:
+
+- **Every** request — tool calls, session operations, and resource reads — must carry `Authorization: Bearer <FRIGATE_MCP_HTTP_SECRET>`. The secret is compared in constant time; a missing and a wrong secret get the same answer.
+- The MCP secret is separate from the Frigate credential and never enters the sandbox, a tool argument, or a log line.
+- The camera scope, the tool contracts, and every policy limit are identical to the stdio server: a remote client can do exactly what a local one can, and no more.
+- Sessions are bounded in number and lifetime, request bodies are bounded in size, and unknown session identifiers and wrong paths are refused with sanitized answers.
+- **Bind loopback by default.** A non-loopback bind is an explicit operator decision (`FRIGATE_MCP_HTTP_ALLOW_NON_LOOPBACK=true`) and must be paired with TLS at the service or a trusted ingress. **Never publish Frigate's internal port 5000**, and never expose Frigate's ports directly; put the MCP endpoint behind your own authenticated reverse proxy.
+
+The durable bridge connects to a remote server with the same tool contracts:
+
+```ts
+import { connectFrigateHttp } from 'frigate-mcp/durable';
+const bridge = await connectFrigateHttp({ url: 'https://mcp.example.internal/mcp', secret: process.env.FRIGATE_MCP_HTTP_SECRET! });
+```
 
 ## Local stdio server
 
@@ -290,7 +332,23 @@ The durable bridge is designed for a host that restarts:
 - **Artifacts expire independently.** An artifact URI recorded before a restart fails explicitly once its TTL has passed, even though the durable transcript still mentions it.
 - **Manifest changes fail closed.** If the server no longer offers exactly the known read-only manifest, the bridge refuses to connect instead of rebinding an operation to something else. Upgrade the bridge and the server together, then restart the host.
 
-### Retention
+### Release acceptance and live checks
+
+- `npm test` runs the whole offline suite: it never contacts a real NVR, never modifies configuration, reviews, events, or footage, and never needs a model provider or an NVR credential.
+- `npm run smoke`, `npm run example:investigation`, and `npm run example:fallback` are reproducible offline demonstrations of the same code-mode seam (discovery, bounded cross-camera reads, image forwarding, an unavailable feature with a fallback, and clip delivery).
+- An **opt-in** live check is available for a real deployment:
+
+  ```sh
+  FRIGATE_LIVE_API_ROOT=https://frigate.example.internal/api \
+  FRIGATE_USERNAME=viewer FRIGATE_PASSWORD=... \
+  npm run test:live
+  ```
+
+  It only reads health, version, statistics, and configuration, and it is skipped unless `FRIGATE_LIVE_API_ROOT` is set. Default CI stays offline.
+
+Known limitations are documented where they apply: the contract is verified against **Frigate v0.18.2** only, other releases report `unknown` or `unsupported` explicitly, semantic search and image snapshots are `unknown` until a real call proves them, review lists have no upstream paging, and the recording summary cannot be scoped to a window.
+
+## Retention
 
 Artifact lifetime and transcript retention are separate concerns:
 

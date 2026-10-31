@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport, type StdioServerParameters } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { Type } from '@earendil-works/pi-ai';
 import { defineExtension, defineTool, type JsonObject } from '@earendil-works/pi-durable';
 import { toolManifests, toolOutputSchemas, type ToolName } from './contract.js';
@@ -93,7 +94,30 @@ const MEDIA_TOOLS = new Set<ToolName>(['get_latest_frame', 'get_event_image']);
  */
 export async function connectFrigateStdio(parameters: StdioServerParameters) {
   const transport = new StdioClientTransport(parameters);
-  const client = new Client({ name: 'frigate-durable-bridge', version: '0.8.0' });
+  return connectFrigate(transport);
+}
+
+/**
+ * The same bridge over a remote Streamable HTTP endpoint.
+ *
+ * The MCP bearer secret travels in the Authorization header only. The tool
+ * contracts, the manifest validation, and the replay policy are identical to
+ * the stdio bridge.
+ */
+export async function connectFrigateHttp(parameters: { url: string; secret: string; headers?: Record<string, string> }) {
+  const transport = new StreamableHTTPClientTransport(new URL(parameters.url), {
+    requestInit: {
+      headers: {
+        ...(parameters.headers ?? {}),
+        authorization: `Bearer ${parameters.secret}`,
+      },
+    },
+  });
+  return connectFrigate(transport);
+}
+
+async function connectFrigate(transport: StdioClientTransport | StreamableHTTPClientTransport) {
+  const client = new Client({ name: 'frigate-durable-bridge', version: '1.0.0' });
   try {
     await client.connect(transport);
     const manifest = await client.listTools();
@@ -164,7 +188,7 @@ export async function connectFrigateStdio(parameters: StdioServerParameters) {
       extension: defineExtension({ name: 'frigate-mcp', tools: registered }),
       close: () => client.close(),
       /** Useful for lifecycle supervision; never persisted or sent to the model. */
-      get pid() { return transport.pid; },
+      get pid() { return ('pid' in transport ? transport.pid : undefined) ?? null; },
       /**
        * Retrieve an evidence artifact's bytes through the MCP resource URI the
        * clip tools returned. The server and the agent may run on different
