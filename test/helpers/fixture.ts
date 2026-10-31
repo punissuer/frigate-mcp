@@ -36,6 +36,29 @@ export const configuration = {
 
 export type Override = (req: IncomingMessage, res: ServerResponse) => boolean;
 
+// Object events modeled on Frigate v0.18.2's EventResponse. Descriptions and
+// other free text are sentinel values that must never be returned.
+export const events = [
+  {
+    id: '1700000000.100000', camera: 'front', label: 'person', sub_label: 'adult', zones: ['porch'],
+    start_time: 1700000000.1, end_time: 1700000010.25, has_clip: true, has_snapshot: true,
+    retain_indefinitely: false, plus_id: null, top_score: 0.92, false_positive: false,
+    data: { score: 0.92, average_estimated_speed: 1.4, description: 'SECRET person description' },
+  },
+  {
+    id: '1700000100.200000', camera: 'front', label: 'car', sub_label: null, zones: ['driveway'],
+    start_time: 1700000100.2, end_time: 1700000105.5, has_clip: false, has_snapshot: true,
+    retain_indefinitely: false, plus_id: null, top_score: 0.75, false_positive: false,
+    data: { score: 0.75, average_estimated_speed: 3.2, description: 'SECRET car description' },
+  },
+  {
+    id: '1700000200.300000', camera: 'back', label: 'person', sub_label: null, zones: ['alley'],
+    start_time: 1700000200.3, end_time: 1700000210.9, has_clip: true, has_snapshot: false,
+    retain_indefinitely: false, plus_id: null, top_score: 0.6, false_positive: false,
+    data: { score: 0.6, average_estimated_speed: 0.8, description: 'SECRET back description' },
+  },
+];
+
 export interface FixtureOptions {
   version?: string;
   /** Require a valid session cookie or bearer token for protected endpoints. */
@@ -48,6 +71,9 @@ export interface FixtureOptions {
   expireSessions?: boolean;
   config?: Record<string, unknown>;
   stats?: Record<string, unknown>;
+  events?: Record<string, unknown>[];
+  /** Cameras the modelled account may read, as Frigate's role filtering does. */
+  allowedCameras?: string[];
   /** Serve HTTPS with an operator-supplied certificate. */
   tls?: { key: Buffer; cert: Buffer };
   /** Extra behavior layered on top of the modeled routes. */
@@ -85,7 +111,7 @@ export async function startFixture(options: FixtureOptions | Override = {}) {
       cookie: req.headers.cookie,
     });
     if (settings.override?.(req, res)) return;
-    const path = req.url ?? '';
+    const path = new URL(req.url ?? '/', 'http://fixture.invalid').pathname;
     if (path === '/nvr/api/' ) {
       res.setHeader('content-type', 'text/plain; charset=utf-8');
       res.end('Frigate is running. Alive and healthy!');
@@ -100,6 +126,27 @@ export async function startFixture(options: FixtureOptions | Override = {}) {
       if (!authorized(req)) { unauthorized(res); return; }
       res.setHeader('content-type', 'application/json');
       res.end(JSON.stringify(settings.config ?? configuration));
+    } else if (path === '/nvr/api/events') {
+      if (!authorized(req)) { unauthorized(res); return; }
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify(selectEvents(req, settings)));
+    } else if (path.startsWith('/nvr/api/events/')) {
+      if (!authorized(req)) { unauthorized(res); return; }
+      const id = decodeURIComponent(path.slice('/nvr/api/events/'.length));
+      const allowed = settings.allowedCameras ?? settings.events?.map(event => String(event.camera)) ?? events.map(event => event.camera);
+      const found = (settings.events ?? events).find(event => event.id === id);
+      if (!found) {
+        res.writeHead(404, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ message: 'Event not found' }));
+        return;
+      }
+      if (!allowed.includes(String(found.camera))) {
+        res.writeHead(403, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ message: 'Access denied' }));
+        return;
+      }
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify(found));
     } else if (path === '/nvr/api/login' && req.method === 'POST') {
       const body = await readBody(req);
       let parsed: { user?: unknown; password?: unknown } = {};
@@ -153,4 +200,45 @@ function readBody(req: IncomingMessage): Promise<Buffer> {
     req.on('data', chunk => chunks.push(chunk as Buffer));
     req.on('end', () => resolve(Buffer.concat(chunks)));
   });
+}
+
+/** Model Frigate v0.18.2's /events filtering, ordering, and offset paging. */
+function selectEvents(req: IncomingMessage, settings: FixtureOptions): Record<string, unknown>[] {
+  const url = new URL(req.url ?? '/', 'http://fixture.invalid');
+  const query = url.searchParams;
+  const allowed = settings.allowedCameras ?? (settings.events ?? events).map(event => String(event.camera));
+  const cameras = query.get('cameras');
+  const labels = query.get('labels');
+  const zones = query.get('zones');
+  const after = query.get('after') ? Number(query.get('after')) : undefined;
+  const before = query.get('before') ? Number(query.get('before')) : undefined;
+  const hasClip = query.get('has_clip');
+  const hasSnapshot = query.get('has_snapshot');
+  const limit = query.get('limit') ? Number(query.get('limit')) : 100;
+  const offset = query.get('offset') ? Number(query.get('offset')) : 0;
+  const sort = query.get('sort') ?? 'date_desc';
+  let selected = (settings.events ?? events).filter(event => {
+    if (cameras && cameras !== 'all' && !cameras.split(',').includes(String(event.camera))) return false;
+    if (!allowed.includes(String(event.camera))) return false;
+    if (labels && labels !== 'all' && !labels.split(',').includes(String(event.label))) return false;
+    if (zones && zones !== 'all' && !(event.zones as string[]).some(zone => zones.split(',').includes(zone))) return false;
+    if (after !== undefined && !(Number(event.start_time) > after)) return false;
+    if (before !== undefined && !(Number(event.start_time) < before)) return false;
+    if (hasClip === '1' && event.has_clip !== true) return false;
+    if (hasClip === '0' && event.has_clip !== false) return false;
+    if (hasSnapshot === '1' && event.has_snapshot !== true) return false;
+    if (hasSnapshot === '0' && event.has_snapshot !== false) return false;
+    return true;
+  });
+  const score = (event: Record<string, unknown>) => Number((event.data as { score?: number } | undefined)?.score ?? 0);
+  const speed = (event: Record<string, unknown>) => Number((event.data as { average_estimated_speed?: number } | undefined)?.average_estimated_speed ?? 0);
+  selected = [...selected].sort((left, right) => {
+    if (sort === 'date_asc') return Number(left.start_time) - Number(right.start_time);
+    if (sort === 'score_asc') return score(left) - score(right);
+    if (sort === 'score_desc') return score(right) - score(left);
+    if (sort === 'speed_asc') return speed(left) - speed(right);
+    if (sort === 'speed_desc') return speed(right) - speed(left);
+    return Number(right.start_time) - Number(left.start_time);
+  });
+  return selected.slice(offset, offset + limit);
 }

@@ -2,7 +2,7 @@
 
 Read-only Frigate MCP tools with an optional **pi-durable code-mode bridge**.
 
-Implemented: [issues #1](https://github.com/punissuer/frigate-mcp/issues/1) and [#2](https://github.com/punissuer/frigate-mcp/issues/2) — the stdio `get_system_status`, `list_cameras`, and `get_capabilities` vertical slices, with managed login, camera scope, and bounded retries. Event investigation, media, restart acceptance tests, and remote Streamable HTTP are tracked in [issues #3–#9](https://github.com/punissuer/frigate-mcp/issues). **This is not the complete v1 server.**
+Implemented: [issues #1](https://github.com/punissuer/frigate-mcp/issues/1), [#2](https://github.com/punissuer/frigate-mcp/issues/2), and [#3](https://github.com/punissuer/frigate-mcp/issues/3) — the stdio `get_system_status`, `list_cameras`, `get_capabilities`, `list_events`, and `get_event` vertical slices, with managed login, camera scope, bounded retries, and paged event investigation. Semantic search, media, restart acceptance tests, and remote Streamable HTTP are tracked in [issues #4–#9](https://github.com/punissuer/frigate-mcp/issues). **This is not the complete v1 server.**
 
 ## Develop and verify
 
@@ -66,6 +66,9 @@ Environment substitution in this JSON is client-specific. It is **not** a config
 | `FRIGATE_TIMEOUT_MS` | `15000`, one deadline for all components of a read; range 1–60000 |
 | `FRIGATE_MAX_RESPONSE_BYTES` | `5242880`, per upstream response, enforced while streaming; may only be lowered |
 | `FRIGATE_MAX_CONCURRENT` | `4`, concurrent tool calls/upstream reads, range 1–32; excess calls return `busy` instead of growing a queue |
+| `FRIGATE_EVENTS_PAGE_SIZE` | `50`, default event page size; range 1–200 and never above the server maximum |
+| `FRIGATE_EVENTS_MAX_WINDOW_SECONDS` | `86400`, maximum historical event window (24 hours) |
+| `FRIGATE_MAX_RESULT_BYTES` | `262144`, maximum serialized structured result size (256 KiB) |
 
 Prefer authenticated Frigate port **8971**, directly or through a trusted TLS reverse proxy, and a least-privilege viewer account. Port **5000 bypasses Frigate role enforcement**; use it only on a trusted private network, with explicit `FRIGATE_TRUSTED_UNAUTHENTICATED=true` and explicit HTTP opt-in if applicable. TLS verification stays enabled. `FRIGATE_CA_CERT_FILE` adds a private CA without disabling verification; Node's `NODE_EXTRA_CA_CERTS` also works at process startup. Never use `NODE_TLS_REJECT_UNAUTHORIZED=0`.
 
@@ -113,6 +116,20 @@ Returns the tested Frigate version and compatibility, capability flags (`support
 
 Capability detection never searches events, downloads media, or claims a feature because public health succeeded. Uncertain capabilities — semantic search, image snapshots — are reported as `unknown`. Semantic search additionally cannot be confirmed without a billed upstream search.
 
+### `list_events({ after, before, ... })`
+
+Lists object events (`GET /events`) inside a bounded interval. `after` and `before` are required and are **UTC Unix seconds**; millisecond values are rejected with an actionable units error, as are reversed intervals and windows longer than `FRIGATE_EVENTS_MAX_WINDOW_SECONDS`.
+
+Optional typed filters are translated to the upstream query: `cameras`, `labels`, `subLabels`, `zones`, `hasClip`, `hasSnapshot`, `inProgress`, `minScore`, `maxScore`, `limit`, `offset`, and `sort` (`date_desc` by default). No arbitrary query parameters, paths, or headers are exposed.
+
+The result reports `page` (`limit`, `offset`, `returned`, `nextOffset` when a page was filled, and the effective `ordering`), the requested `interval`, and `completeness`. A filled page is reported as `truncated` with `complete: false` plus a warning — a partial page is never presented as an exact total or as evidence that nothing else happened. Offset paging is the only pagination the pinned release supports; no cursor is invented. Duplicate event identifiers within a page are removed.
+
+### `get_event({ eventId })`
+
+Reads one event (`GET /events/{event_id}`) and returns its identifier, camera, label, sub-label, zones, start/end times, evidence availability (`hasClip`, `hasSnapshot`), and optional score and speed. Event identifiers are validated and URL-encoded; path traversal is rejected before any upstream request.
+
+Events outside the configured camera scope are rejected with `forbidden` and their metadata is never included in the error. Descriptions, OCR, and license-plate text are untrusted upstream data and are not returned. No thumbnail data is embedded.
+
 Small structured results are mirrored as JSON text in `content` for ordinary clients. Output schemas bound camera/detector entries and identifier lengths; oversized or malformed upstream data fails rather than being silently truncated. Redirects are rejected, and upstream error bodies are never echoed. All components of a read share one deadline; reads are sequential, avoiding a fan-out beyond the configured concurrency bound.
 
 Transient failures (network errors, 408, 429, 5xx) are retried at most twice within the deadline, with jitter and bounded `Retry-After` handling. Authorization, not-found, and validation failures are never retried.
@@ -123,6 +140,7 @@ The fixture contract was checked against **Frigate v0.18.2** tagged source:
 
 - [HTTP handlers: plain-text health/version and authenticated statistics](https://github.com/blakeblackshear/frigate/blob/v0.18.2/frigate/api/app.py)
 - [Authentication: `/login`, the `frigate_token` cookie, and role checks](https://github.com/blakeblackshear/frigate/blob/v0.18.2/frigate/api/auth.py)
+- [Events: `/events` filters, ordering, and offset paging](https://github.com/blakeblackshear/frigate/blob/v0.18.2/frigate/api/event.py)
 - [Statistics shape](https://github.com/blakeblackshear/frigate/blob/v0.18.2/frigate/stats/util.py)
 
 `0.18.2` and its hexadecimal commit-suffixed builds are classified `supported` **for the status and discovery contracts only**. Older pre-0.18 releases are classified `unsupported`; other versions/build formats are `unknown`. Probes may still succeed on untested versions, but the result explicitly warns about compatibility. This is source/fixture contract testing, **not live-NVR certification**, and does not establish support for future tools.
@@ -158,7 +176,7 @@ registry.install(createCodemodeExtension({
 // On shutdown: close the harness first, then sandbox.close(), then bridge.close().
 ```
 
-The bridge initializes MCP, validates the exact known read-only manifest, and registers `mcp__frigate__get_system_status`, `mcp__frigate__list_cameras`, and `mcp__frigate__get_capabilities` as replay-safe nested tools. Connect again on host restart; never persist the live client, credentials, or transport. Tool-contract upgrades require a compatible bridge; an unknown manifest fails closed.
+The bridge initializes MCP, validates the exact known read-only manifest, and registers `mcp__frigate__get_system_status`, `mcp__frigate__list_cameras`, `mcp__frigate__get_capabilities`, `mcp__frigate__list_events`, and `mcp__frigate__get_event` as replay-safe nested tools. Connect again on host restart; never persist the live client, credentials, or transport. Tool-contract upgrades require a compatible bridge; an unknown manifest fails closed.
 
 A code-mode investigation can use:
 

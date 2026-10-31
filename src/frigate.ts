@@ -4,11 +4,17 @@ import { performRequest, TransportError } from './http.js';
 import {
   compatibility,
   capabilitiesOutputSchema,
+  getEventOutputSchema,
   listCamerasOutputSchema,
+  listEventsOutputSchema,
   outputSchema,
   statisticsSchema,
   type CapabilitiesResult,
+  type EventSummary,
+  type GetEventResult,
+  type ListEventsInput,
   type ListCamerasResult,
+  type ListEventsResult,
   type ReadError,
   type Statistics,
   type StatusResult,
@@ -363,5 +369,164 @@ export class FrigateClient {
       maxResponseBytes: this.#options.maxResponseBytes,
       maxConcurrent: this.#options.maxConcurrent,
     };
+  }
+
+  /** Translate one upstream event into the sanitized, allowlisted shape. */
+  #sanitizeEvent(raw: unknown): { ok: true; value: EventSummary } | { ok: false; error: ReadError } {
+    if (!raw || typeof raw !== 'object') return { ok: false, error: problem('malformed_response', 'Unexpected Frigate event response') };
+    const event = raw as Record<string, unknown>;
+    const id = typeof event.id === 'string' ? event.id : undefined;
+    const camera = typeof event.camera === 'string' ? event.camera : undefined;
+    const label = typeof event.label === 'string' ? event.label : undefined;
+    const startTime = typeof event.start_time === 'number' && Number.isFinite(event.start_time) ? event.start_time : undefined;
+    if (!id || id.length > 64 || !camera || camera.length > 64 || !label || label.length > 64 || startTime === undefined) {
+      return { ok: false, error: problem('malformed_response', 'Unexpected Frigate event response') };
+    }
+    const zones = Array.isArray(event.zones)
+      ? event.zones.filter(zone => typeof zone === 'string' && zone.length <= 64).slice(0, 64)
+      : [];
+    const endTime = typeof event.end_time === 'number' && Number.isFinite(event.end_time) ? event.end_time : undefined;
+    const subLabel = typeof event.sub_label === 'string' && event.sub_label.length > 0 && event.sub_label.length <= 64 ? event.sub_label : undefined;
+    const data = event.data && typeof event.data === 'object' ? event.data as Record<string, unknown> : undefined;
+    const score = data && typeof data.score === 'number' && Number.isFinite(data.score) && data.score >= 0 && data.score <= 1
+      ? data.score : undefined;
+    const speed = data && typeof data.average_estimated_speed === 'number' && Number.isFinite(data.average_estimated_speed) && data.average_estimated_speed >= 0
+      ? data.average_estimated_speed : undefined;
+    return {
+      ok: true,
+      value: {
+        id,
+        camera,
+        label,
+        ...(subLabel === undefined ? {} : { subLabel }),
+        zones,
+        startTime,
+        ...(endTime === undefined ? {} : { endTime }),
+        hasClip: event.has_clip === true,
+        hasSnapshot: event.has_snapshot === true,
+        ...(score === undefined ? {} : { score }),
+        ...(speed === undefined ? {} : { speed }),
+      },
+    };
+  }
+
+  async listEvents(input: ListEventsInput, cancellation?: AbortSignal): Promise<ListEventsResult> {
+    const deadline = AbortSignal.timeout(this.#options.timeoutMs);
+    const signal = cancellation ? AbortSignal.any([cancellation, deadline]) : deadline;
+    const ordering = input.sort ?? 'date_desc';
+    const limit = Math.min(input.limit ?? this.#options.eventsPageSize, this.#options.eventsPageSize, 200);
+    const offset = input.offset ?? 0;
+    const interval = { after: input.after, before: input.before, maxWindowSeconds: this.#options.eventsMaxWindowSeconds };
+    const page = { limit, offset, returned: 0, ordering };
+    const empty = { events: [], page, interval, completeness: { complete: true, truncated: false } };
+    const failure = (error: ReadError, warnings: string[] = []) =>
+      listEventsOutputSchema.parse({ ok: false, error, data: empty, meta: this.#metadata(warnings) });
+
+    // Time handling: UTC Unix seconds, never milliseconds.
+    if (Math.abs(input.after) > 1e11 || Math.abs(input.before) > 1e11) {
+      return failure(problem('invalid_request', 'Timestamps must be UTC Unix seconds, not milliseconds'), ['Timestamps are interpreted as UTC Unix seconds']);
+    }
+    if (!(input.before > input.after)) {
+      return failure(problem('invalid_request', 'Interval start must be earlier than its end'));
+    }
+    if (input.before - input.after > this.#options.eventsMaxWindowSeconds) {
+      return failure(problem('invalid_request', `Interval exceeds the configured ${this.#options.eventsMaxWindowSeconds} second maximum window`));
+    }
+    if (input.minScore !== undefined && input.maxScore !== undefined && input.minScore > input.maxScore) {
+      return failure(problem('invalid_request', 'Minimum score must not exceed the maximum score'));
+    }
+    // Camera scope: an explicitly forbidden camera is rejected, never broadened.
+    const allowed = this.#options.cameraScopeRestricted ? new Set(this.#options.cameras) : undefined;
+    if (allowed && input.cameras?.some(camera => !allowed.has(camera))) {
+      return failure(problem('forbidden', 'One or more cameras are outside the configured scope'));
+    }
+    const requestedCameras = input.cameras?.length ? input.cameras : allowed ? [...allowed] : undefined;
+
+    const query = new URLSearchParams();
+    query.set('after', String(input.after));
+    query.set('before', String(input.before));
+    query.set('limit', String(limit));
+    query.set('offset', String(offset));
+    query.set('include_thumbnails', '0');
+    query.set('sort', ordering);
+    if (requestedCameras?.length) query.set('cameras', requestedCameras.join(','));
+    if (input.labels?.length) query.set('labels', input.labels.join(','));
+    if (input.subLabels?.length) query.set('sub_labels', input.subLabels.join(','));
+    if (input.zones?.length) query.set('zones', input.zones.join(','));
+    if (input.hasClip !== undefined) query.set('has_clip', input.hasClip ? '1' : '0');
+    if (input.hasSnapshot !== undefined) query.set('has_snapshot', input.hasSnapshot ? '1' : '0');
+    if (input.inProgress !== undefined) query.set('in_progress', input.inProgress ? '1' : '0');
+    if (input.minScore !== undefined) query.set('min_score', String(input.minScore));
+    if (input.maxScore !== undefined) query.set('max_score', String(input.maxScore));
+
+    const admitted = this.#admit();
+    try {
+      const raw = await this.#request(`events?${query.toString()}`, 'application/json', signal);
+      if (!raw.ok) return failure(raw.error);
+      if (raw.value.status !== 200) return failure(this.#statusError(raw.value.status));
+      if (!this.#hasMime(raw.value, 'application/json')) return failure(problem('malformed_response', 'Unexpected Frigate content type'));
+      let parsed: unknown;
+      try { parsed = JSON.parse(raw.value.body.toString('utf8')); }
+      catch { return failure(problem('malformed_response', 'Unexpected Frigate events response')); }
+      if (!Array.isArray(parsed)) return failure(problem('malformed_response', 'Unexpected Frigate events response'));
+      const events: EventSummary[] = [];
+      const seen = new Set<string>();
+      for (const entry of parsed) {
+        const sanitized = this.#sanitizeEvent(entry);
+        if (!sanitized.ok) return failure(sanitized.error);
+        if (allowed && !allowed.has(sanitized.value.camera)) continue;
+        if (seen.has(sanitized.value.id)) continue;
+        seen.add(sanitized.value.id);
+        events.push(sanitized.value);
+        if (events.length > 200) return failure(problem('payload_too_large', 'Frigate returned more events than the server can bound'));
+      }
+      const truncated = events.length >= limit;
+      const data = {
+        events,
+        page: { limit, offset, returned: events.length, ...(truncated ? { nextOffset: offset + events.length } : {}), ordering },
+        interval,
+        completeness: { complete: !truncated, truncated },
+      };
+      const serialized = JSON.stringify(data).length;
+      if (serialized > this.#options.maxResultBytes) {
+        return failure(problem('payload_too_large', 'The event result exceeds the configured result size limit'));
+      }
+      const warnings: string[] = [];
+      if (truncated) warnings.push('The page limit was reached; more events may exist in this interval');
+      if (offset > 0) warnings.push('Paging over a live dataset can shift or duplicate events between pages');
+      return listEventsOutputSchema.parse({ ok: true, data, meta: this.#metadata(warnings) });
+    } finally {
+      if (admitted) this.#release();
+    }
+  }
+
+  async getEvent(eventId: string, cancellation?: AbortSignal): Promise<GetEventResult> {
+    const deadline = AbortSignal.timeout(this.#options.timeoutMs);
+    const signal = cancellation ? AbortSignal.any([cancellation, deadline]) : deadline;
+    const failure = (error: ReadError) =>
+      getEventOutputSchema.parse({ ok: false, error, data: {}, meta: this.#metadata([]) });
+    if (!/^[A-Za-z0-9_.-]{1,64}$/.test(eventId) || eventId.includes('..')) {
+      return failure(problem('invalid_request', 'Invalid event identifier'));
+    }
+    const admitted = this.#admit();
+    try {
+      const raw = await this.#request(`events/${encodeURIComponent(eventId)}`, 'application/json', signal);
+      if (!raw.ok) return failure(raw.error);
+      if (raw.value.status === 404) return failure(problem('not_found', 'Frigate event not found', false, 404));
+      if (raw.value.status !== 200) return failure(this.#statusError(raw.value.status));
+      if (!this.#hasMime(raw.value, 'application/json')) return failure(problem('malformed_response', 'Unexpected Frigate content type'));
+      let parsed: unknown;
+      try { parsed = JSON.parse(raw.value.body.toString('utf8')); }
+      catch { return failure(problem('malformed_response', 'Unexpected Frigate event response')); }
+      const sanitized = this.#sanitizeEvent(parsed);
+      if (!sanitized.ok) return failure(sanitized.error);
+      if (this.#options.cameraScopeRestricted && !this.#options.cameras.includes(sanitized.value.camera)) {
+        // Do not reveal metadata about an event outside the configured scope.
+        return failure(problem('forbidden', 'The event is outside the configured camera scope'));
+      }
+      return getEventOutputSchema.parse({ ok: true, data: { event: sanitized.value }, meta: this.#metadata([]) });
+    } finally {
+      if (admitted) this.#release();
+    }
   }
 }

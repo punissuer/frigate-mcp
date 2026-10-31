@@ -21,6 +21,12 @@ export interface FrigateOptions {
   timeoutMs?: number | undefined;
   maxResponseBytes?: number | undefined;
   maxConcurrent?: number | undefined;
+  /** Default event page size. */
+  eventsPageSize?: number | undefined;
+  /** Maximum historical event window in seconds. */
+  eventsMaxWindowSeconds?: number | undefined;
+  /** Maximum serialized structured result size in bytes. */
+  maxResultBytes?: number | undefined;
 }
 
 const CAMERA_ID = /^[A-Za-z0-9_-]{1,64}$/;
@@ -67,9 +73,16 @@ export function validateOptions(options: FrigateOptions) {
     timeoutMs: options.timeoutMs ?? 15_000,
     maxResponseBytes: options.maxResponseBytes ?? 5 * 1024 * 1024,
     maxConcurrent: options.maxConcurrent ?? 4,
+    eventsPageSize: options.eventsPageSize ?? 50,
+    eventsMaxWindowSeconds: options.eventsMaxWindowSeconds ?? 86_400,
+    maxResultBytes: options.maxResultBytes ?? 256 * 1024,
+  };
+  const bounds: Record<string, number> = {
+    timeoutMs: 60_000, maxResponseBytes: 5 * 1024 * 1024, maxConcurrent: 32,
+    eventsPageSize: 200, eventsMaxWindowSeconds: 7 * 86_400, maxResultBytes: 1024 * 1024,
   };
   for (const [key, value] of Object.entries(limits)) {
-    if (!Number.isSafeInteger(value) || value < 1 || value > ({ timeoutMs: 60_000, maxResponseBytes: 5 * 1024 * 1024, maxConcurrent: 32 }[key] ?? 0)) {
+    if (!Number.isSafeInteger(value) || value < 1 || value > (bounds[key] ?? 0)) {
       throw new Error(`Invalid ${key} policy limit`);
     }
   }
@@ -105,6 +118,9 @@ export function optionsFromEnv(env: NodeJS.ProcessEnv): FrigateOptions {
     ['timeoutMs', 'FRIGATE_TIMEOUT_MS'],
     ['maxResponseBytes', 'FRIGATE_MAX_RESPONSE_BYTES'],
     ['maxConcurrent', 'FRIGATE_MAX_CONCURRENT'],
+    ['eventsPageSize', 'FRIGATE_EVENTS_PAGE_SIZE'],
+    ['eventsMaxWindowSeconds', 'FRIGATE_EVENTS_MAX_WINDOW_SECONDS'],
+    ['maxResultBytes', 'FRIGATE_MAX_RESULT_BYTES'],
   ] as const) {
     if (env[variable] !== undefined) options[key] = Number(env[variable]);
   }

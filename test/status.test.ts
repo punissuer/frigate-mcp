@@ -51,7 +51,7 @@ test('conventional MCP client receives bounded schemas, read-only annotations, a
     try {
       await client.connect(transport);
       const { tools } = await client.listTools();
-      assert.equal(tools.length, 3);
+      assert.equal(tools.length, 5);
       for (const tool of tools) {
         const expected = toolManifests[tool.name as keyof typeof toolManifests];
         assert.ok(expected, `unexpected tool ${tool.name}`);

@@ -13,10 +13,13 @@ const cameras = await tools.mcp__frigate__list_cameras({});
 if (cameras.isError || !cameras.structuredContent.ok) throw new Error('Camera discovery failed');
 const capabilities = await tools.mcp__frigate__get_capabilities({});
 if (capabilities.isError || !capabilities.structuredContent.ok) throw new Error('Capability detection failed');
+const events = await tools.mcp__frigate__list_events({after: 1699999000, before: 1700001000});
+if (events.isError || !events.structuredContent.ok) throw new Error('Event listing failed');
 text({
   status: status.structuredContent,
   cameras: cameras.structuredContent,
   capabilities: capabilities.structuredContent,
+  events: events.structuredContent.data,
 });
 `, { env: { FRIGATE_USERNAME: credentials.user, FRIGATE_PASSWORD: credentials.password } });
   for (const item of result.content) if (item.type === 'text') console.log(item.text);
