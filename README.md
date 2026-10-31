@@ -276,6 +276,26 @@ const artifact = await bridge.readArtifact(uri); // { mimeType, byteLength, blob
 await fs.writeFile('evidence.mp4', Buffer.from(artifact.blob, 'base64'));
 ```
 
-Durable code mode journals delivered nested results; interrupted safe reads may run again and observe changed state. This slice does **not** claim exactly-once external execution, a cross-call snapshot, or completed crash/reopen acceptance coverage (issue #8). The deterministic harness/fixture example is in `examples/smoke.ts`.
+Durable code mode journals delivered nested results; interrupted safe reads may run again and observe changed state. This slice does **not** claim exactly-once external execution or a cross-call snapshot. The deterministic harness/fixture example is in `examples/smoke.ts`.
+
+### Restart and recovery
+
+The durable bridge is designed for a host that restarts:
+
+- **Persist the harness, not the connection.** Use a persistent durable storage (SQLite or JSONL) and reinstall the same extensions — the Frigate bridge and the code-mode extension — after a restart. Never persist the MCP client, the transport handle, or credentials.
+- **Committed observations are reused.** After a crash, the code-mode tool reruns the script and hands it the journaled results, so a nested call whose result was committed is not issued again.
+- **Interrupted safe reads may repeat.** A read that was in flight when the process died has no committed result, so it follows its own replay policy and may run again — and it can observe newer data.
+- **Replay is not exactly-once execution.** It is not a cross-call snapshot either: two calls in the same investigation can observe different moments of a live system.
+- **The upstream session is re-established.** The restarted server authenticates again; an expired external bearer token fails with an actionable error instead of refreshing itself.
+- **Artifacts expire independently.** An artifact URI recorded before a restart fails explicitly once its TTL has passed, even though the durable transcript still mentions it.
+- **Manifest changes fail closed.** If the server no longer offers exactly the known read-only manifest, the bridge refuses to connect instead of rebinding an operation to something else. Upgrade the bridge and the server together, then restart the host.
+
+### Retention
+
+Artifact lifetime and transcript retention are separate concerns:
+
+- **Artifacts** live in `FRIGATE_ARTIFACT_DIR`, are bounded by `FRIGATE_ARTIFACT_QUOTA_BYTES`, and expire after `FRIGATE_ARTIFACT_TTL_SECONDS`. Expired artifacts are removed, and the directory is created with private permissions.
+- **Transcripts, tool results, and image blocks** are retained by the durable host according to the host's own storage policy. They can contain surveillance observations and image bytes, so that storage should be protected and expired on the host's schedule — the server does not and cannot purge it.
+- The server never logs image bytes, event descriptions, or credentials.
 
 The full approved plan and dependency graph are in [docs/spec.md](docs/spec.md).

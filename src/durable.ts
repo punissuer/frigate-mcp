@@ -93,7 +93,7 @@ const MEDIA_TOOLS = new Set<ToolName>(['get_latest_frame', 'get_event_image']);
  */
 export async function connectFrigateStdio(parameters: StdioServerParameters) {
   const transport = new StdioClientTransport(parameters);
-  const client = new Client({ name: 'frigate-durable-bridge', version: '0.7.0' });
+  const client = new Client({ name: 'frigate-durable-bridge', version: '0.8.0' });
   try {
     await client.connect(transport);
     const manifest = await client.listTools();

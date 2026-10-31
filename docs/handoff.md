@@ -4,7 +4,7 @@
 
 The user approved the spec, test boundary, and nine-ticket implementation breakdown. All nine tickets were published to [punissuer/frigate-mcp](https://github.com/punissuer/frigate-mcp/issues) with `ready-for-agent` labels and native GitHub blocking relationships.
 
-**Issues #1 through #7 are implemented, committed, and pushed to `main`.** The working tree is clean. The next agreed step is **[#8: Restart and replay acceptance](https://github.com/punissuer/frigate-mcp/issues/8)**, which has not been started.
+**Issues #1 through #8 are implemented, committed, and pushed to `main`.** The working tree is clean. The next agreed step is **[#9: Secure Streamable HTTP and release acceptance](https://github.com/punissuer/frigate-mcp/issues/9)**, which has not been started.
 
 The user reported: “afaict it works.” This is positive feedback, not a recorded live-Frigate test result. No live NVR or provider credentials were used by the assistant.
 
@@ -12,7 +12,7 @@ The user reported: “afaict it works.” This is positive feedback, not a recor
 
 1. `README.md`: current usage, configuration, authentication, camera scope, limitations, compatibility, and durable integration.
 2. `docs/spec.md`: approved overall design and dependency graph.
-3. GitHub issue #8: its full acceptance criteria before implementing the next slice.
+3. GitHub issue #9: its full acceptance criteria before implementing the next slice.
 4. `src/contract.ts`, `src/frigate.ts`, `src/auth.ts`, `src/http.ts`, and `src/durable.ts`: the existing public contracts and integration boundary.
 
 ## What issues #1 and #2 deliver
@@ -59,6 +59,14 @@ Camera scope (issue #2):
 
 Image bytes never enter a structured result, are never printed with `text()`, and are never logged; the bridge keeps the image block inside the preserved MCP content array so a script can select it and forward it with code mode's `image()`.
 
+Restart and recovery (issue #8):
+
+- The recovery test runs a deterministic investigation in a child process against persistent SQLite durable storage, kills that process with SIGKILL while a nested call is in flight, reopens the same storage, reinstalls the bridge and the code-mode extension, and resumes the pending run.
+- Upstream request counts show that a committed nested result is **not** issued again while the interrupted replay-safe read **is** issued again, and the resumed script completes with its evidence summary and completeness metadata.
+- The orphaned MCP server process exits on its own when its stdin closes, so a crash leaves no unbounded subprocess or temporary media.
+- The durable storage is inspected to confirm that no credential is persisted, and only durable results and metadata are stored: never a live MCP client, transport handle, or secret.
+- An artifact reference that expired across the restart fails explicitly, and the bridge refuses a changed callable manifest instead of rebinding an operation.
+
 Evidence clips (issue #7):
 
 - `get_event_clip({ eventId })` and `get_recording_clip({ camera, start, end })` download evidence video into private temporary storage and publish it atomically. An event clip resolves the event first: its camera is scope-checked and its duration must be safely bounded before any download starts.
@@ -104,6 +112,8 @@ The server rejects unsafe configuration, sanitizes startup and upstream errors, 
 | `test/reviews.test.ts` | Review segment, recording interval, gap, and no-mutation boundary tests |
 | `test/media.test.ts` | Image retrieval, offline fallback, scope, size cap, cancellation, and forwarding boundary tests |
 | `test/clips.test.ts` | Artifact publication, resource retrieval, quota, TTL, cleanup, and cancellation boundary tests |
+| `test/recovery.test.ts` | Crash and resume acceptance, expired artifact references, and manifest-change refusal |
+| `test/helpers/recovery-child.ts` | Child process that runs one investigation against persistent durable storage |
 | `examples/smoke.ts` | Reproducible offline end-to-end demonstration |
 | `.github/workflows/ci.yml` | Node 24 install, typecheck, tests, smoke, packaging, production audit |
 | `package.json`, `package-lock.json` | Pinned dependencies, optional durable peers, separate exports, build/test commands |
@@ -128,7 +138,7 @@ git diff --check
 
 Results:
 
-- **91 tests passed** (22 from issue #1, 14 from issue #2, 15 from issue #3, 9 from issue #4, 11 from issue #5, 8 from issue #6, 12 from issue #7).
+- **94 tests passed** (22 from issue #1, 14 from issue #2, 15 from issue #3, 9 from issue #4, 11 from issue #5, 8 from issue #6, 12 from issue #7, 3 from issue #8).
 - Typecheck/build/smoke passed.
 - Audit reported **zero vulnerabilities**.
 - Package dry-run passed.
@@ -141,6 +151,8 @@ Issue #2 tests additionally cover successful discovery, expired external tokens,
 Issue #3 tests additionally cover event filtering and translated query parameters, millisecond/reversed/oversized interval rejection, camera scope on filters and direct lookups, truncated pages with a continuation offset, duplicate identifier removal, equal timestamps, live-page shift warnings, short-page completeness, empty intervals, missing events, role denial, malformed and oversized event responses, and identifier path-traversal rejection.
 
 Issue #4 tests additionally cover a successful semantic search with distance and source, a disabled service with an explicit fallback to `list_events`, a missing endpoint reported as unsupported, camera scope on search filters and results, an empty search, malformed upstream search data, a retried transient search failure, truncated search results, and rejected units, windows, and empty queries.
+
+Issue #8 tests additionally cover a crashed investigation that resumes without repeating committed observations, an expired artifact reference failing explicitly after a restart, and the bridge refusing a changed callable manifest.
 
 Issue #7 tests additionally cover an event clip published as an opaque artifact, artifact bytes read by a conventional MCP resource client, the durable bridge's host-side retrieval helper, guessed and forbidden artifact identifiers, an event whose duration cannot be bounded, bounded and permitted recording clips, missing recordings and wrong clip MIME types, an oversized clip rejected while streaming, quota exhaustion, TTL expiry, and a cancelled download leaving no artifact behind.
 
@@ -207,6 +219,7 @@ Use authenticated Frigate port 8971 or a trusted TLS reverse proxy. Port 5000 by
 | [#5](https://github.com/punissuer/frigate-mcp/issues/5) | Reviews and recording availability; landed | #2 |
 | [#6](https://github.com/punissuer/frigate-mcp/issues/6) | Frames and event images; landed | #3 |
 | [#7](https://github.com/punissuer/frigate-mcp/issues/7) | Bounded evidence clips; landed | #3, #5 |
+| [#8](https://github.com/punissuer/frigate-mcp/issues/8) | Restart and replay acceptance; landed | #6, #7 |
 | [#4](https://github.com/punissuer/frigate-mcp/issues/4) | Semantic event search | #3 |
 | [#5](https://github.com/punissuer/frigate-mcp/issues/5) | Reviews and recording availability | #2 |
 | [#6](https://github.com/punissuer/frigate-mcp/issues/6) | Frames and event images | #3 |
@@ -226,4 +239,5 @@ Use authenticated Frigate port 8971 or a trusted TLS reverse proxy. Port 5000 by
 - [x] Implement #5 as the next vertical slice, extending the real code-mode/stdio/HTTP-fixture tests.
 - [x] Implement #6 as the next vertical slice, extending the real code-mode/stdio/HTTP-fixture tests.
 - [x] Implement #7 as the next vertical slice, extending the real code-mode/stdio/HTTP-fixture tests.
-- [ ] Read GitHub issue #8 in full and implement it as the next vertical slice.
+- [x] Implement #8 as the next vertical slice, extending the real code-mode/stdio/HTTP-fixture tests.
+- [ ] Read GitHub issue #9 in full and implement it as the next vertical slice.
