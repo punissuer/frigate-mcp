@@ -2,7 +2,7 @@
 
 Read-only Frigate MCP tools with an optional **pi-durable code-mode bridge**.
 
-Implemented: [issues #1](https://github.com/punissuer/frigate-mcp/issues/1), [#2](https://github.com/punissuer/frigate-mcp/issues/2), and [#3](https://github.com/punissuer/frigate-mcp/issues/3) — the stdio `get_system_status`, `list_cameras`, `get_capabilities`, `list_events`, and `get_event` vertical slices, with managed login, camera scope, bounded retries, and paged event investigation. Semantic search, media, restart acceptance tests, and remote Streamable HTTP are tracked in [issues #4–#9](https://github.com/punissuer/frigate-mcp/issues). **This is not the complete v1 server.**
+Implemented: [issues #1](https://github.com/punissuer/frigate-mcp/issues/1)–[#4](https://github.com/punissuer/frigate-mcp/issues/4) — the stdio `get_system_status`, `list_cameras`, `get_capabilities`, `list_events`, `get_event`, and `search_events` vertical slices, with managed login, camera scope, bounded retries, paged event investigation, and semantic search. Media, restart acceptance tests, and remote Streamable HTTP are tracked in [issues #5–#9](https://github.com/punissuer/frigate-mcp/issues). **This is not the complete v1 server.**
 
 ## Develop and verify
 
@@ -130,6 +130,14 @@ Reads one event (`GET /events/{event_id}`) and returns its identifier, camera, l
 
 Events outside the configured camera scope are rejected with `forbidden` and their metadata is never included in the error. Descriptions, OCR, and license-plate text are untrusted upstream data and are not returned. No thumbnail data is embedded.
 
+### `search_events({ query, after, before, ... })`
+
+Searches object events with a natural-language query over `GET /events/search`, inside the same bounded UTC Unix-second interval and with the same camera scope, byte limits, deadlines, and completeness rules as `list_events`. `searchType` selects `thumbnail`, `description`, or `both`; unsupported modes are rejected rather than silently ignored.
+
+The result states the observed capability: `supported` after a successful search, `disabled` when the upstream service reports that semantic search is not enabled, `unsupported` when the release does not provide the endpoint, and `unknown` when the state could not be determined. `get_capabilities` never triggers a search, so it reports `semanticSearch` as `unknown` until a search is actually performed.
+
+Relevance is reported as the upstream `searchDistance` and `searchSource`. A distance is not a confidence score and is not presented as one. The search is read-only: it never regenerates descriptions or embeddings, manages models, invokes Frigate Chat, or starts background work.
+
 Small structured results are mirrored as JSON text in `content` for ordinary clients. Output schemas bound camera/detector entries and identifier lengths; oversized or malformed upstream data fails rather than being silently truncated. Redirects are rejected, and upstream error bodies are never echoed. All components of a read share one deadline; reads are sequential, avoiding a fan-out beyond the configured concurrency bound.
 
 Transient failures (network errors, 408, 429, 5xx) are retried at most twice within the deadline, with jitter and bounded `Retry-After` handling. Authorization, not-found, and validation failures are never retried.
@@ -176,7 +184,7 @@ registry.install(createCodemodeExtension({
 // On shutdown: close the harness first, then sandbox.close(), then bridge.close().
 ```
 
-The bridge initializes MCP, validates the exact known read-only manifest, and registers `mcp__frigate__get_system_status`, `mcp__frigate__list_cameras`, `mcp__frigate__get_capabilities`, `mcp__frigate__list_events`, and `mcp__frigate__get_event` as replay-safe nested tools. Connect again on host restart; never persist the live client, credentials, or transport. Tool-contract upgrades require a compatible bridge; an unknown manifest fails closed.
+The bridge initializes MCP, validates the exact known read-only manifest, and registers `mcp__frigate__get_system_status`, `mcp__frigate__list_cameras`, `mcp__frigate__get_capabilities`, `mcp__frigate__list_events`, `mcp__frigate__get_event`, and `mcp__frigate__search_events` as replay-safe nested tools. Connect again on host restart; never persist the live client, credentials, or transport. Tool-contract upgrades require a compatible bridge; an unknown manifest fails closed.
 
 A code-mode investigation can use:
 

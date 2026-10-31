@@ -42,6 +42,18 @@ const toolParameters = {
     sort: Type.Optional(Type.String()),
   }, { additionalProperties: false }),
   get_event: Type.Object({ eventId: Type.String() }, { additionalProperties: false }),
+  search_events: Type.Object({
+    query: Type.String(),
+    after: Type.Number(),
+    before: Type.Number(),
+    cameras: Type.Optional(Type.Array(Type.String())),
+    labels: Type.Optional(Type.Array(Type.String())),
+    subLabels: Type.Optional(Type.Array(Type.String())),
+    zones: Type.Optional(Type.Array(Type.String())),
+    searchType: Type.Optional(Type.String()),
+    limit: Type.Optional(Type.Number()),
+    offset: Type.Optional(Type.Number()),
+  }, { additionalProperties: false }),
 } as const;
 
 /**
@@ -50,7 +62,7 @@ const toolParameters = {
  */
 export async function connectFrigateStdio(parameters: StdioServerParameters) {
   const transport = new StdioClientTransport(parameters);
-  const client = new Client({ name: 'frigate-durable-bridge', version: '0.3.0' });
+  const client = new Client({ name: 'frigate-durable-bridge', version: '0.4.0' });
   try {
     await client.connect(transport);
     const manifest = await client.listTools();

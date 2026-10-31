@@ -74,6 +74,8 @@ export interface FixtureOptions {
   events?: Record<string, unknown>[];
   /** Cameras the modelled account may read, as Frigate's role filtering does. */
   allowedCameras?: string[];
+  /** Model Frigate's semantic search service. */
+  semanticSearch?: { enabled: boolean; matches?: Record<string, unknown>[] };
   /** Serve HTTPS with an operator-supplied certificate. */
   tls?: { key: Buffer; cert: Buffer };
   /** Extra behavior layered on top of the modeled routes. */
@@ -126,6 +128,19 @@ export async function startFixture(options: FixtureOptions | Override = {}) {
       if (!authorized(req)) { unauthorized(res); return; }
       res.setHeader('content-type', 'application/json');
       res.end(JSON.stringify(settings.config ?? configuration));
+    } else if (path === '/nvr/api/events/search') {
+      if (!authorized(req)) { unauthorized(res); return; }
+      const search = settings.semanticSearch ?? { enabled: false };
+      if (!search.enabled) {
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ success: false, message: 'Semantic search is not enabled' }));
+        return;
+      }
+      res.setHeader('content-type', 'application/json');
+      const url = new URL(req.url ?? '/', 'http://fixture.invalid');
+      const limit = url.searchParams.get('limit') ? Number(url.searchParams.get('limit')) : 50;
+      const offset = url.searchParams.get('offset') ? Number(url.searchParams.get('offset')) : 0;
+      res.end(JSON.stringify((search.matches ?? []).slice(offset, offset + limit)));
     } else if (path === '/nvr/api/events') {
       if (!authorized(req)) { unauthorized(res); return; }
       res.setHeader('content-type', 'application/json');

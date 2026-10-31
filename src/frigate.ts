@@ -7,6 +7,7 @@ import {
   getEventOutputSchema,
   listCamerasOutputSchema,
   listEventsOutputSchema,
+  searchEventsOutputSchema,
   outputSchema,
   statisticsSchema,
   type CapabilitiesResult,
@@ -16,11 +17,14 @@ import {
   type ListCamerasResult,
   type ListEventsResult,
   type ReadError,
+  type SearchEventsInput,
+  type SearchEventsResult,
   type Statistics,
   type StatusResult,
 } from './contract.js';
 
 type Outcome<T> = { ok: true; value: T } | { ok: false; error: ReadError };
+type SearchCapability = 'supported' | 'disabled' | 'unsupported' | 'unknown';
 type RawResponse = { status: number; body: Buffer; headers: Record<string, string | string[] | undefined> };
 
 const problem = (code: ReadError['code'], message: string, retryable = false, status?: number): ReadError =>
@@ -392,6 +396,8 @@ export class FrigateClient {
       ? data.score : undefined;
     const speed = data && typeof data.average_estimated_speed === 'number' && Number.isFinite(data.average_estimated_speed) && data.average_estimated_speed >= 0
       ? data.average_estimated_speed : undefined;
+    const searchDistance = typeof event.search_distance === 'number' && Number.isFinite(event.search_distance) ? event.search_distance : undefined;
+    const searchSource = event.search_source === 'thumbnail' || event.search_source === 'description' ? event.search_source : undefined;
     return {
       ok: true,
       value: {
@@ -406,6 +412,8 @@ export class FrigateClient {
         hasSnapshot: event.has_snapshot === true,
         ...(score === undefined ? {} : { score }),
         ...(speed === undefined ? {} : { speed }),
+        ...(searchDistance === undefined ? {} : { searchDistance }),
+        ...(searchSource === undefined ? {} : { searchSource }),
       },
     };
   }
@@ -528,5 +536,110 @@ export class FrigateClient {
     } finally {
       if (admitted) this.#release();
     }
+  }
+
+  /**
+   * Semantic search over the upstream search service.
+   *
+   * The search is billable upstream, so it is only performed when the caller
+   * explicitly asks for it. Capability states are observed, never guessed: a
+   * successful search reports `supported`, a disabled service reports
+   * `disabled`, a missing endpoint reports `unsupported`, and anything else
+   * stays `unknown`.
+   */
+  async searchEvents(input: SearchEventsInput, cancellation?: AbortSignal): Promise<SearchEventsResult> {
+    const deadline = AbortSignal.timeout(this.#options.timeoutMs);
+    const signal = cancellation ? AbortSignal.any([cancellation, deadline]) : deadline;
+    const limit = Math.min(input.limit ?? this.#options.eventsPageSize, this.#options.eventsPageSize, 200);
+    const offset = input.offset ?? 0;
+    const interval = { after: input.after, before: input.before, maxWindowSeconds: this.#options.eventsMaxWindowSeconds };
+    const page = { limit, offset, returned: 0, ordering: 'relevance' as const };
+    const empty = { events: [], page, interval, completeness: { complete: true, truncated: false } };
+    const failure = (error: ReadError, capability: SearchCapability, warnings: string[] = []) =>
+      searchEventsOutputSchema.parse({ ok: false, error, data: { ...empty, capability }, meta: this.#metadata(warnings) });
+
+    if (Math.abs(input.after) > 1e11 || Math.abs(input.before) > 1e11) {
+      return failure(problem('invalid_request', 'Timestamps must be UTC Unix seconds, not milliseconds'), 'unknown', ['Timestamps are interpreted as UTC Unix seconds']);
+    }
+    if (!(input.before > input.after)) {
+      return failure(problem('invalid_request', 'Interval start must be earlier than its end'), 'unknown');
+    }
+    if (input.before - input.after > this.#options.eventsMaxWindowSeconds) {
+      return failure(problem('invalid_request', `Interval exceeds the configured ${this.#options.eventsMaxWindowSeconds} second maximum window`), 'unknown');
+    }
+    const allowed = this.#options.cameraScopeRestricted ? new Set(this.#options.cameras) : undefined;
+    if (allowed && input.cameras?.some(camera => !allowed.has(camera))) {
+      return failure(problem('forbidden', 'One or more cameras are outside the configured scope'), 'unknown');
+    }
+    const requestedCameras = input.cameras?.length ? input.cameras : allowed ? [...allowed] : undefined;
+
+    const query = new URLSearchParams();
+    query.set('query', input.query);
+    query.set('after', String(input.after));
+    query.set('before', String(input.before));
+    query.set('limit', String(limit));
+    query.set('offset', String(offset));
+    query.set('include_thumbnails', '0');
+    query.set('sort', 'relevance');
+    query.set('search_type', input.searchType === 'both' ? 'thumbnail,description' : input.searchType ?? 'thumbnail');
+    if (requestedCameras?.length) query.set('cameras', requestedCameras.join(','));
+    if (input.labels?.length) query.set('labels', input.labels.join(','));
+    if (input.subLabels?.length) query.set('sub_labels', input.subLabels.join(','));
+    if (input.zones?.length) query.set('zones', input.zones.join(','));
+
+    const admitted = this.#admit();
+    try {
+      const raw = await this.#request(`events/search?${query.toString()}`, 'application/json', signal);
+      if (!raw.ok) return failure(raw.error, 'unknown');
+      if (raw.value.status === 404) {
+        return failure(problem('feature_unsupported', 'This Frigate release does not provide semantic search', false, 404), 'unsupported');
+      }
+      if (raw.value.status === 400 && this.#isSearchDisabled(raw.value.body)) {
+        return failure(problem('feature_disabled', 'Semantic search is not enabled on this Frigate instance', false, 400), 'disabled',
+          ['Semantic search is disabled; fall back to list_events with ordinary filters']);
+      }
+      if (raw.value.status !== 200) return failure(this.#statusError(raw.value.status), 'unknown');
+      if (!this.#hasMime(raw.value, 'application/json')) return failure(problem('malformed_response', 'Unexpected Frigate content type'), 'unknown');
+      let parsed: unknown;
+      try { parsed = JSON.parse(raw.value.body.toString('utf8')); }
+      catch { return failure(problem('malformed_response', 'Unexpected Frigate search response'), 'unknown'); }
+      if (!Array.isArray(parsed)) return failure(problem('malformed_response', 'Unexpected Frigate search response'), 'unknown');
+      const events: EventSummary[] = [];
+      const seen = new Set<string>();
+      for (const entry of parsed) {
+        const sanitized = this.#sanitizeEvent(entry);
+        if (!sanitized.ok) return failure(sanitized.error, 'unknown');
+        if (allowed && !allowed.has(sanitized.value.camera)) continue;
+        if (seen.has(sanitized.value.id)) continue;
+        seen.add(sanitized.value.id);
+        events.push(sanitized.value);
+        if (events.length > 200) return failure(problem('payload_too_large', 'Frigate returned more search results than the server can bound'), 'unknown');
+      }
+      const truncated = events.length >= limit;
+      const data = {
+        events,
+        page: { limit, offset, returned: events.length, ...(truncated ? { nextOffset: offset + events.length } : {}), ordering: 'relevance' as const },
+        interval,
+        completeness: { complete: !truncated, truncated },
+        capability: 'supported' as const,
+      };
+      if (JSON.stringify(data).length > this.#options.maxResultBytes) {
+        return failure(problem('payload_too_large', 'The search result exceeds the configured result size limit'), 'unknown');
+      }
+      const warnings: string[] = [];
+      if (truncated) warnings.push('The page limit was reached; more matches may exist in this interval');
+      if (offset > 0) warnings.push('Paging over a live dataset can shift or duplicate events between pages');
+      return searchEventsOutputSchema.parse({ ok: true, data, meta: this.#metadata(warnings) });
+    } finally {
+      if (admitted) this.#release();
+    }
+  }
+
+  /** Detect the upstream "semantic search is not enabled" answer without echoing it. */
+  #isSearchDisabled(body: Buffer): boolean {
+    try {
+      const parsed = JSON.parse(body.toString('utf8')) as { message?: unknown };
+      return parsed?.message === 'Semantic search is not enabled';
+    } catch { return false; }
   }
 }

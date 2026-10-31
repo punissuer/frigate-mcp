@@ -4,7 +4,7 @@
 
 The user approved the spec, test boundary, and nine-ticket implementation breakdown. All nine tickets were published to [punissuer/frigate-mcp](https://github.com/punissuer/frigate-mcp/issues) with `ready-for-agent` labels and native GitHub blocking relationships.
 
-**Issues #1, #2, and #3 are implemented, committed, and pushed to `main`.** The working tree is clean. The next agreed step is **[#4: Semantic event search](https://github.com/punissuer/frigate-mcp/issues/4)**, which has not been started.
+**Issues #1, #2, #3, and #4 are implemented, committed, and pushed to `main`.** The working tree is clean. The next agreed step is **[#5: Reviews and recording availability](https://github.com/punissuer/frigate-mcp/issues/5)**, which has not been started.
 
 The user reported: “afaict it works.” This is positive feedback, not a recorded live-Frigate test result. No live NVR or provider credentials were used by the assistant.
 
@@ -12,7 +12,7 @@ The user reported: “afaict it works.” This is positive feedback, not a recor
 
 1. `README.md`: current usage, configuration, authentication, camera scope, limitations, compatibility, and durable integration.
 2. `docs/spec.md`: approved overall design and dependency graph.
-3. GitHub issue #4: its full acceptance criteria before implementing the next slice.
+3. GitHub issue #5: its full acceptance criteria before implementing the next slice.
 4. `src/contract.ts`, `src/frigate.ts`, `src/auth.ts`, `src/http.ts`, and `src/durable.ts`: the existing public contracts and integration boundary.
 
 ## What issues #1 and #2 deliver
@@ -29,7 +29,7 @@ Predetermined faux-provider tool call (no external LLM)
   → controlled Frigate HTTP fixture
 ```
 
-Five read-only tools are exposed:
+Six read-only tools are exposed:
 
 - `get_system_status({})` reads `/`, `/version`, and `/stats` beneath an explicitly configured API root, and returns independent health/version/statistics outcomes, an `authorizedApiAccess` value confirmed only by a successful valid protected statistics read, allowlisted camera/detector fields, and a bounded, schema-validated success/error envelope mirrored as JSON text.
 - `list_cameras({ camera? })` reads only allowlisted fields of `GET /config` and returns permitted camera identifiers, zone names, and detection state. It never returns raw configuration, RTSP URLs, provider keys, or paths.
@@ -46,6 +46,8 @@ Authentication (issue #2):
 Camera scope (issue #2):
 
 - `FRIGATE_CAMERAS` restricts discovery and the existing status statistics. Cameras outside the scope are dropped from statistics and rejected when requested explicitly. Unscopable global aggregates (detector inference speed) are omitted rather than leaking a wider scope.
+
+- `search_events({ query, after, before, ... })` searches object events over `GET /events/search` with the same scope, time-unit, byte-limit, deadline, and completeness rules as `list_events`. It reports the observed capability state (`supported`, `disabled`, `unsupported`, `unknown`), never triggers a search during capability discovery, rejects unsupported search modes, and reports relevance as the upstream distance rather than an invented confidence. It is read-only: it never regenerates descriptions or embeddings, manages models, invokes Frigate Chat, or starts background work.
 
 Event policy (issue #3):
 
@@ -77,6 +79,7 @@ The server rejects unsafe configuration, sanitizes startup and upstream errors, 
 | `test/lifecycle.test.ts` | Manifest rejection, cancellation, startup redaction, configuration safety |
 | `test/discovery.test.ts` | Authentication, session refresh, camera scope, retries, TLS/CA, redaction boundary tests |
 | `test/events.test.ts` | Event filtering, paging, completeness, scope, units, and identifier boundary tests |
+| `test/search.test.ts` | Semantic search capability states, fallback, scope, and truncation boundary tests |
 | `examples/smoke.ts` | Reproducible offline end-to-end demonstration |
 | `.github/workflows/ci.yml` | Node 24 install, typecheck, tests, smoke, packaging, production audit |
 | `package.json`, `package-lock.json` | Pinned dependencies, optional durable peers, separate exports, build/test commands |
@@ -101,7 +104,7 @@ git diff --check
 
 Results:
 
-- **51 tests passed** (22 from issue #1, 14 from issue #2, 15 from issue #3).
+- **60 tests passed** (22 from issue #1, 14 from issue #2, 15 from issue #3, 9 from issue #4).
 - Typecheck/build/smoke passed.
 - Audit reported **zero vulnerabilities**.
 - Package dry-run passed.
@@ -112,6 +115,8 @@ Tests cover code-mode namespace/search discovery, model-visible versus callable 
 Issue #2 tests additionally cover successful discovery, expired external tokens, rejected credentials, revoked sessions, serialized refresh under concurrency, camera scope on discovery and statistics, role denial, malformed and oversized configuration, redirect rejection on `/config`, transient retry with `Retry-After`, cancellation of a configuration read, and custom-CA handling against a self-signed TLS fixture (skipped when `openssl` is unavailable).
 
 Issue #3 tests additionally cover event filtering and translated query parameters, millisecond/reversed/oversized interval rejection, camera scope on filters and direct lookups, truncated pages with a continuation offset, duplicate identifier removal, equal timestamps, live-page shift warnings, short-page completeness, empty intervals, missing events, role denial, malformed and oversized event responses, and identifier path-traversal rejection.
+
+Issue #4 tests additionally cover a successful semantic search with distance and source, a disabled service with an explicit fallback to `list_events`, a missing endpoint reported as unsupported, camera scope on search filters and results, an empty search, malformed upstream search data, a retried transient search failure, truncated search results, and rejected units, windows, and empty queries.
 
 These are fixture-driven checks, not live deployment certification. Full crash/reopen durability acceptance is reserved for #8.
 
@@ -146,13 +151,13 @@ References:
 - A replay-safe read may be repeated if interrupted before its result is committed and can observe newer data. No exactly-once or cross-call snapshot guarantee is claimed.
 - Host lifecycle: create the bridge again after restart; close the harness before closing the sandbox and bridge. Never persist clients, transport objects, or credentials.
 
-## Next slice: issue #4
+## Next slice: issue #5
 
 Implement the approved ticket end to end, retaining the same high-level test boundary. In particular:
 
-1. Add `search_events` over `GET /events/search` with a bounded natural-language query, and report an explicit unavailable/disabled outcome when the upstream feature is not enabled, rather than a misleading empty result.
-2. Keep the same camera scope, UTC Unix-second interval, and completeness metadata rules as `list_events`.
-3. Treat the upstream semantic-search endpoint as billable: capability detection must not call it, and a call must be explicit, bounded, and attributable.
+1. Add `list_review_items` and `get_review_item` over `GET /review` and `GET /review/{review_id}`, keeping review segments distinct from object events.
+2. Add `get_recording_summary` over `GET /{camera}/recordings/summary` and `list_recordings` over `GET /{camera}/recordings`, with required bounded time ranges and the upstream's actual scope.
+3. Enforce the camera scope on every review, recording, and camera-scoped lookup; never mark reviews viewed or mutate anything.
 4. Extend the bridge's known manifest/registrations, schemas, documentation, fixtures, and boundary tests as part of the slice.
 
 Do not broaden v1 into arbitrary HTTP, mutations, PTZ, Frigate Chat delegation, live streaming, monitoring/background jobs, or multi-instance federation. The user's actual agent application and deployment details have not been identified; do not modify neighboring repositories based on assumptions.
@@ -166,6 +171,7 @@ Use authenticated Frigate port 8971 or a trusted TLS reverse proxy. Port 5000 by
 | [#1](https://github.com/punissuer/frigate-mcp/issues/1) | First durable-to-Frigate status query; landed | None |
 | [#2](https://github.com/punissuer/frigate-mcp/issues/2) | Authentication and camera discovery; landed | #1 |
 | [#3](https://github.com/punissuer/frigate-mcp/issues/3) | Filter and inspect object events; landed | #2 |
+| [#4](https://github.com/punissuer/frigate-mcp/issues/4) | Semantic event search; landed | #3 |
 | [#4](https://github.com/punissuer/frigate-mcp/issues/4) | Semantic event search | #3 |
 | [#5](https://github.com/punissuer/frigate-mcp/issues/5) | Reviews and recording availability | #2 |
 | [#6](https://github.com/punissuer/frigate-mcp/issues/6) | Frames and event images | #3 |
@@ -181,4 +187,5 @@ Use authenticated Frigate port 8971 or a trusted TLS reverse proxy. Port 5000 by
 - [x] Land #1 with a commit and push.
 - [x] Implement #2 as the next vertical slice, extending the real code-mode/stdio/HTTP-fixture tests.
 - [x] Implement #3 as the next vertical slice, extending the real code-mode/stdio/HTTP-fixture tests.
-- [ ] Read GitHub issue #4 in full and implement it as the next vertical slice.
+- [x] Implement #4 as the next vertical slice, extending the real code-mode/stdio/HTTP-fixture tests.
+- [ ] Read GitHub issue #5 in full and implement it as the next vertical slice.
