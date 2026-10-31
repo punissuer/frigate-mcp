@@ -61,6 +61,13 @@ import { connectFrigateHttp } from 'frigate-mcp/durable';
 const bridge = await connectFrigateHttp({ url: 'https://mcp.example.internal/mcp', secret: process.env.FRIGATE_MCP_HTTP_SECRET! });
 ```
 
+## Install in Hermes
+
+Hermes, and other MCP clients, can add this server with a single command. See
+[HERMES_INSTALL.md](HERMES_INSTALL.md) for the full guide: build steps, secret
+handling in `~/.hermes/.env`, the `hermes mcp add` invocation, the remote
+Streamable HTTP variant, camera scope, the tool inventory, and troubleshooting.
+
 ## Local stdio server
 
 Configure an **exact API root**, including `/api` and any reverse-proxy path prefix. A trailing slash is optional. The server will not append another `/api`.
