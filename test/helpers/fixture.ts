@@ -36,6 +36,10 @@ export const configuration = {
 
 export type Override = (req: IncomingMessage, res: ServerResponse) => boolean;
 
+// A tiny JPEG-like payload. The fixture only needs the declared MIME type and
+// a bounded body; no decoder reads it.
+export const jpegBytes = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0xff, 0xd9]);
+
 // Review segments modeled on Frigate v0.18.2's ReviewSegmentResponse. Review
 // times are ISO 8601 strings without a zone offset, as FastAPI serializes them.
 export const reviewItems = [
@@ -125,6 +129,15 @@ export interface FixtureOptions {
   reviews?: Record<string, unknown>[];
   recordings?: Record<string, Record<string, unknown>[]>;
   recordingSummaries?: Record<string, Record<string, unknown>[]>;
+  /** Model camera availability for latest-frame requests. */
+  cameras?: {
+    /** Cameras that answer with a stored preview instead of a live frame. */
+    offline?: string[];
+    /** Cameras with no frame at all. */
+    missing?: string[];
+    /** Cameras whose latest frame is served with a different MIME type. */
+    wrongMime?: string[];
+  };
   /** Serve HTTPS with an operator-supplied certificate. */
   tls?: { key: Buffer; cert: Buffer };
   /** Extra behavior layered on top of the modeled routes. */
@@ -177,6 +190,40 @@ export async function startFixture(options: FixtureOptions | Override = {}) {
       if (!authorized(req)) { unauthorized(res); return; }
       res.setHeader('content-type', 'application/json');
       res.end(JSON.stringify(settings.config ?? configuration));
+    } else if (/^\/nvr\/api\/[A-Za-z0-9_-]+\/latest\.jpg$/.test(path)) {
+      if (!authorized(req)) { unauthorized(res); return; }
+      const camera = path.split('/')[3]!;
+      const cameras = settings.cameras ?? {};
+      if (cameras.missing?.includes(camera)) {
+        res.writeHead(404, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ success: false, message: 'Camera not found' }));
+        return;
+      }
+      if (cameras.wrongMime?.includes(camera)) {
+        res.setHeader('content-type', 'text/html');
+        res.end('<html>SECRET</html>');
+        return;
+      }
+      res.setHeader('content-type', 'image/jpeg');
+      if (cameras.offline?.includes(camera)) res.setHeader('x-frigate-offline', 'true');
+      res.end(jpegBytes);
+    } else if (/^\/nvr\/api\/events\/[A-Za-z0-9_.-]+\/(snapshot|thumbnail)\.jpg$/.test(path)) {
+      if (!authorized(req)) { unauthorized(res); return; }
+      const id = decodeURIComponent(path.split('/')[4]!);
+      const kind = path.split('/')[5]!.replace('.jpg', '');
+      const found = (settings.events ?? events).find(event => event.id === id);
+      if (!found) {
+        res.writeHead(404, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ success: false, message: 'Event not found' }));
+        return;
+      }
+      if (kind === 'snapshot' && found.has_snapshot !== true) {
+        res.writeHead(404, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ success: false, message: 'Snapshot not available' }));
+        return;
+      }
+      res.setHeader('content-type', 'image/jpeg');
+      res.end(jpegBytes);
     } else if (path === '/nvr/api/review') {
       if (!authorized(req)) { unauthorized(res); return; }
       res.setHeader('content-type', 'application/json');

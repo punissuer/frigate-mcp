@@ -10,6 +10,8 @@ export const LIST_REVIEW_ITEMS_TOOL = 'list_review_items';
 export const GET_REVIEW_ITEM_TOOL = 'get_review_item';
 export const GET_RECORDING_SUMMARY_TOOL = 'get_recording_summary';
 export const LIST_RECORDINGS_TOOL = 'list_recordings';
+export const LATEST_FRAME_TOOL = 'get_latest_frame';
+export const EVENT_IMAGE_TOOL = 'get_event_image';
 
 export const STATUS_DESCRIPTION = 'Read-only Frigate health, version compatibility, and sanitized camera/detector statistics. Public health is not proof of authorized API access. Partial failures are explicit; no configuration or media is returned.';
 export const LIST_CAMERAS_DESCRIPTION = 'List the Frigate cameras this server may inspect, with their zone names and detection state. Only allowlisted configuration fields are read; RTSP URLs, provider credentials, and filesystem paths are never returned. A camera outside the operator scope is rejected.';
@@ -21,6 +23,8 @@ export const LIST_REVIEW_ITEMS_DESCRIPTION = 'List Frigate review segments in a 
 export const GET_REVIEW_ITEM_DESCRIPTION = 'Read one Frigate review segment by identifier, including its severity, reviewed state, times, and permitted event references. A review segment groups detections and is not one detected object. Review items outside the configured camera scope are rejected without leaking their references.';
 export const GET_RECORDING_SUMMARY_DESCRIPTION = 'Report the upstream recording summary for one camera: which days and hours have recordings. The upstream summary covers every recorded day for that camera and cannot be scoped to a window, so a window argument is rejected instead of being ignored. The admin-only storage endpoint is never used.';
 export const LIST_RECORDINGS_TOOL_DESCRIPTION = 'List the recording intervals of one camera inside a required, bounded UTC Unix-second range, with the gaps between them. Every interval is reported with explicit availability; a gap is missing footage, not evidence that nothing happened.';
+export const LATEST_FRAME_DESCRIPTION = 'Fetch the most recent frame of one permitted camera as a bounded image. The upstream does not report the capture time, so freshness is unknown and the retrieval time is reported separately. When the camera is offline Frigate may answer with a preview frame; that is reported explicitly instead of claiming a live view.';
+export const EVENT_IMAGE_DESCRIPTION = 'Fetch the snapshot or thumbnail of one permitted object event as a bounded image. The event camera is resolved and scope-checked before any media is requested. A missing snapshot, a missing event, and an expired event are reported as distinct outcomes, never as an empty image.';
 
 const CAMERA_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const number = z.number().finite().nonnegative();
@@ -87,6 +91,11 @@ export const listRecordingsInputSchema = z.strictObject({
   after: timestamp,
   before: timestamp,
 });
+export const latestFrameInputSchema = z.strictObject({ camera: cameraIdSchema });
+export const eventImageInputSchema = z.strictObject({
+  eventId: z.string().min(1).max(64).regex(/^[A-Za-z0-9_.-]+$/),
+  kind: z.enum(['snapshot', 'thumbnail']),
+});
 
 export const cameraSchema = z.object({
   camera_fps: number.optional(),
@@ -103,7 +112,7 @@ export const statisticsSchema = z.object({
 });
 export type Statistics = z.infer<typeof statisticsSchema>;
 export const errorSchema = z.strictObject({
-  code: z.enum(['authentication', 'forbidden', 'not_found', 'rate_limit', 'upstream_error', 'timeout', 'cancelled', 'unreachable', 'malformed_response', 'payload_too_large', 'redirect_rejected', 'busy', 'invalid_request', 'feature_disabled', 'feature_unsupported']),
+  code: z.enum(['authentication', 'forbidden', 'not_found', 'rate_limit', 'upstream_error', 'timeout', 'cancelled', 'unreachable', 'malformed_response', 'payload_too_large', 'redirect_rejected', 'busy', 'invalid_request', 'feature_disabled', 'feature_unsupported', 'media_unavailable']),
   message: z.string().max(160),
   retryable: z.boolean(),
   status: z.number().int().min(100).max(599).optional(),
@@ -266,6 +275,19 @@ export const listRecordingsDataSchema = z.strictObject({
   completeness: z.strictObject({ complete: z.boolean(), truncated: z.boolean() }),
 });
 
+export const mediaDataSchema = z.strictObject({
+  /** The camera is unknown when the request was rejected before it was resolved. */
+  camera: cameraIdSchema.optional(),
+  kind: z.enum(['latest_frame', 'event_snapshot', 'event_thumbnail']),
+  mimeType: z.enum(['image/jpeg', 'image/png', 'image/webp']),
+  byteLength: z.number().int().nonnegative(),
+  /** The upstream does not report the capture time of the media. */
+  captureTime: z.literal('unknown'),
+  retrievedAt: z.iso.datetime(),
+  /** `preview_fallback` means Frigate answered with a stored preview, not a live frame. */
+  source: z.enum(['live', 'preview_fallback', 'event_media']),
+});
+
 export const metadataSchema = z.strictObject({
   observedAt: z.iso.datetime(),
   warnings: z.array(z.string().max(160)).max(8),
@@ -301,6 +323,10 @@ export const getRecordingSummaryOutputSchema = envelope(getRecordingSummaryDataS
 export type GetRecordingSummaryResult = z.infer<typeof getRecordingSummaryOutputSchema>;
 export const listRecordingsOutputSchema = envelope(listRecordingsDataSchema);
 export type ListRecordingsResult = z.infer<typeof listRecordingsOutputSchema>;
+export const latestFrameOutputSchema = envelope(mediaDataSchema);
+export type LatestFrameResult = z.infer<typeof latestFrameOutputSchema>;
+export const eventImageOutputSchema = envelope(mediaDataSchema);
+export type EventImageResult = z.infer<typeof eventImageOutputSchema>;
 export const getEventOutputSchema = envelope(getEventDataSchema);
 export type GetEventResult = z.infer<typeof getEventOutputSchema>;
 export type EventSummary = z.infer<typeof eventSchema>;
@@ -333,6 +359,8 @@ export const listReviewItemsManifest = manifestEntry(LIST_REVIEW_ITEMS_TOOL, LIS
 export const getReviewItemManifest = manifestEntry(GET_REVIEW_ITEM_TOOL, GET_REVIEW_ITEM_DESCRIPTION, getReviewItemInputSchema, getReviewItemOutputSchema);
 export const getRecordingSummaryManifest = manifestEntry(GET_RECORDING_SUMMARY_TOOL, GET_RECORDING_SUMMARY_DESCRIPTION, getRecordingSummaryInputSchema, getRecordingSummaryOutputSchema);
 export const listRecordingsManifest = manifestEntry(LIST_RECORDINGS_TOOL, LIST_RECORDINGS_TOOL_DESCRIPTION, listRecordingsInputSchema, listRecordingsOutputSchema);
+export const latestFrameManifest = manifestEntry(LATEST_FRAME_TOOL, LATEST_FRAME_DESCRIPTION, latestFrameInputSchema, latestFrameOutputSchema);
+export const eventImageManifest = manifestEntry(EVENT_IMAGE_TOOL, EVENT_IMAGE_DESCRIPTION, eventImageInputSchema, eventImageOutputSchema);
 
 export const toolManifests = {
   [STATUS_TOOL]: statusManifest,
@@ -345,6 +373,8 @@ export const toolManifests = {
   [GET_REVIEW_ITEM_TOOL]: getReviewItemManifest,
   [GET_RECORDING_SUMMARY_TOOL]: getRecordingSummaryManifest,
   [LIST_RECORDINGS_TOOL]: listRecordingsManifest,
+  [LATEST_FRAME_TOOL]: latestFrameManifest,
+  [EVENT_IMAGE_TOOL]: eventImageManifest,
 } as const;
 
 /** Runtime validators matching the advertised manifests. */
@@ -359,6 +389,8 @@ export const toolInputSchemas = {
   [GET_REVIEW_ITEM_TOOL]: getReviewItemInputSchema,
   [GET_RECORDING_SUMMARY_TOOL]: getRecordingSummaryInputSchema,
   [LIST_RECORDINGS_TOOL]: listRecordingsInputSchema,
+  [LATEST_FRAME_TOOL]: latestFrameInputSchema,
+  [EVENT_IMAGE_TOOL]: eventImageInputSchema,
 } as const;
 
 export const toolOutputSchemas = {
@@ -372,6 +404,8 @@ export const toolOutputSchemas = {
   [GET_REVIEW_ITEM_TOOL]: getReviewItemOutputSchema,
   [GET_RECORDING_SUMMARY_TOOL]: getRecordingSummaryOutputSchema,
   [LIST_RECORDINGS_TOOL]: listRecordingsOutputSchema,
+  [LATEST_FRAME_TOOL]: latestFrameOutputSchema,
+  [EVENT_IMAGE_TOOL]: eventImageOutputSchema,
 } as const;
 
 export type ToolName = keyof typeof toolManifests;

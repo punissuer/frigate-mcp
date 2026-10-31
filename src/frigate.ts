@@ -9,6 +9,8 @@ import {
   listEventsOutputSchema,
   listRecordingsOutputSchema,
   listReviewItemsOutputSchema,
+  latestFrameOutputSchema,
+  eventImageOutputSchema,
   getRecordingSummaryOutputSchema,
   getReviewItemOutputSchema,
   searchEventsOutputSchema,
@@ -16,7 +18,9 @@ import {
   statisticsSchema,
   type CapabilitiesResult,
   type EventSummary,
+  type EventImageResult,
   type GetEventResult,
+  type LatestFrameResult,
   type GetRecordingSummaryResult,
   type GetReviewItemResult,
   type ListRecordingsResult,
@@ -37,6 +41,9 @@ type Outcome<T> = { ok: true; value: T } | { ok: false; error: ReadError };
 type SearchCapability = 'supported' | 'disabled' | 'unsupported' | 'unknown';
 type RawResponse = { status: number; body: Buffer; headers: Record<string, string | string[] | undefined> };
 type ReviewSummary = { id: string; camera: string; startTime: number; endTime?: number; severity: 'alert' | 'detection'; reviewed: boolean; eventReferences: string[] };
+type MediaMimeType = 'image/jpeg' | 'image/png' | 'image/webp';
+/** A structured result plus the bounded media bytes, when the read succeeded. */
+export interface MediaOutcome<T> { result: T; media?: Buffer }
 
 /**
  * Convert an upstream timestamp to UTC Unix seconds.
@@ -918,6 +925,143 @@ export class FrigateClient {
         return failure(problem('payload_too_large', 'The recording result exceeds the configured result size limit'));
       }
       return listRecordingsOutputSchema.parse({ ok: true, data, meta: this.#metadata([]) });
+    } finally {
+      if (admitted) this.#release();
+    }
+  }
+
+  /**
+   * Fetch a bounded media resource.
+   *
+   * Media limits are separate from the small JSON-result limit: the byte cap
+   * is enforced while streaming, the MIME type is validated, and the bytes are
+   * never logged or placed in a structured result.
+   */
+  async #fetchMedia(path: string, signal: AbortSignal): Promise<Outcome<{ body: Buffer; mimeType: MediaMimeType; offline: boolean }>> {
+    let response: RawResponse;
+    try {
+      const headers = await this.#session.headers(signal);
+      const raw = await performRequest({
+        url: new URL(path, this.#options.root),
+        headers: { accept: 'image/jpeg,image/png,image/webp', ...headers },
+        signal,
+        maxBytes: this.#options.mediaMaxBytes,
+        ...(this.#options.ca ? { ca: this.#options.ca } : {}),
+      });
+      response = { status: raw.status, body: raw.body, headers: raw.headers };
+    } catch (error) {
+      if (error instanceof TransportError) {
+        if (error.kind === 'timeout') return { ok: false, error: problem('timeout', 'Frigate media deadline exceeded', true) };
+        if (error.kind === 'cancelled') return { ok: false, error: problem('cancelled', 'Frigate request cancelled') };
+        if (error.kind === 'payload_too_large') return { ok: false, error: problem('payload_too_large', 'Frigate media exceeded the media byte limit') };
+        return { ok: false, error: problem('unreachable', 'Unable to reach Frigate', true) };
+      }
+      return { ok: false, error: problem('unreachable', 'Unable to reach Frigate', true) };
+    }
+    this.#session.observe(response.headers);
+    if (response.status !== 200) return { ok: false, error: this.#statusError(response.status) };
+    const mime = this.#hasMime(response, 'image/jpeg') ? 'image/jpeg'
+      : this.#hasMime(response, 'image/png') ? 'image/png'
+      : this.#hasMime(response, 'image/webp') ? 'image/webp' : undefined;
+    if (!mime) {
+      return { ok: false, error: problem('malformed_response', 'Unexpected Frigate media content type') };
+    }
+    if (response.body.length === 0) return { ok: false, error: problem('malformed_response', 'Empty Frigate media response') };
+    const offlineHeader = response.headers['x-frigate-offline'];
+    const offline = (Array.isArray(offlineHeader) ? offlineHeader[0] ?? '' : offlineHeader ?? '').toString().toLowerCase() === 'true';
+    return { ok: true, value: { body: response.body, mimeType: mime as MediaMimeType, offline } };
+  }
+
+  async getLatestFrame(camera: string, cancellation?: AbortSignal): Promise<MediaOutcome<LatestFrameResult>> {
+    const deadline = AbortSignal.timeout(this.#options.mediaTimeoutMs);
+    const signal = cancellation ? AbortSignal.any([cancellation, deadline]) : deadline;
+    const failure = (error: ReadError, warnings: string[] = []) =>
+      latestFrameOutputSchema.parse({
+        ok: false,
+        error,
+        data: { camera, kind: 'latest_frame', mimeType: 'image/jpeg', byteLength: 0, captureTime: 'unknown', retrievedAt: new Date().toISOString(), source: 'live' },
+        meta: this.#metadata(warnings),
+      });
+    if (this.#options.cameraScopeRestricted && !this.#options.cameras.includes(camera)) {
+      return { result: failure(problem('forbidden', 'The camera is outside the configured scope')) };
+    }
+    const admitted = this.#admit();
+    try {
+      const media = await this.#fetchMedia(`${camera}/latest.jpg`, signal);
+      if (!media.ok) return { result: failure(media.error) };
+      const source = media.value.offline ? 'preview_fallback' as const : 'live' as const;
+      const data = {
+        camera,
+        kind: 'latest_frame' as const,
+        mimeType: media.value.mimeType,
+        byteLength: media.value.body.length,
+        captureTime: 'unknown' as const,
+        retrievedAt: new Date().toISOString(),
+        source,
+      };
+      const warnings = [
+        'The upstream does not report the capture time of this frame; freshness is unknown',
+        ...(source === 'preview_fallback'
+          ? ['The camera was offline: Frigate returned a stored preview frame, not a live view']
+          : []),
+      ];
+      return { result: latestFrameOutputSchema.parse({ ok: true, data, meta: this.#metadata(warnings) }), media: media.value.body };
+    } finally {
+      if (admitted) this.#release();
+    }
+  }
+
+  async getEventImage(eventId: string, kind: 'snapshot' | 'thumbnail', cancellation?: AbortSignal): Promise<MediaOutcome<EventImageResult>> {
+    const deadline = AbortSignal.timeout(this.#options.mediaTimeoutMs);
+    const signal = cancellation ? AbortSignal.any([cancellation, deadline]) : deadline;
+    const dataKind = kind === 'snapshot' ? 'event_snapshot' as const : 'event_thumbnail' as const;
+    const failure = (error: ReadError, warnings: string[] = []) =>
+      eventImageOutputSchema.parse({
+        ok: false,
+        error,
+        data: { kind: dataKind, mimeType: 'image/jpeg', byteLength: 0, captureTime: 'unknown', retrievedAt: new Date().toISOString(), source: 'event_media' },
+        meta: this.#metadata(warnings),
+      });
+    if (!/^[A-Za-z0-9_.-]{1,64}$/.test(eventId) || eventId.includes('..')) {
+      return { result: failure(problem('invalid_request', 'Invalid event identifier')) };
+    }
+    const admitted = this.#admit();
+    try {
+      // Resolve the event camera first: evidence is only fetched for a
+      // permitted camera, and the event must exist before its media is fetched.
+      const event = await this.#request(`events/${encodeURIComponent(eventId)}`, 'application/json', signal);
+      if (!event.ok) return { result: failure(event.error) };
+      if (event.value.status === 404) return { result: failure(problem('not_found', 'Frigate event not found; it may have expired', false, 404)) };
+      if (event.value.status !== 200) return { result: failure(this.#statusError(event.value.status)) };
+      let parsed: unknown;
+      try { parsed = JSON.parse(event.value.body.toString('utf8')); }
+      catch { return { result: failure(problem('malformed_response', 'Unexpected Frigate event response')) } };
+      const sanitized = this.#sanitizeEvent(parsed);
+      if (!sanitized.ok) return { result: failure(sanitized.error) };
+      if (this.#options.cameraScopeRestricted && !this.#options.cameras.includes(sanitized.value.camera)) {
+        return { result: failure(problem('forbidden', 'The event is outside the configured camera scope')) };
+      }
+      const media = await this.#fetchMedia(`events/${encodeURIComponent(eventId)}/${kind}.jpg`, signal);
+      if (!media.ok) {
+        if (media.error.code === 'not_found') {
+          const unavailable = kind === 'snapshot'
+            ? problem('media_unavailable', 'No snapshot is available for this event', false, 404)
+            : problem('not_found', 'Frigate event media not found; it may have expired', false, 404);
+          return { result: failure(unavailable) };
+        }
+        return { result: failure(media.error) };
+      }
+      const data = {
+        camera: sanitized.value.camera,
+        kind: dataKind,
+        mimeType: media.value.mimeType,
+        byteLength: media.value.body.length,
+        captureTime: 'unknown' as const,
+        retrievedAt: new Date().toISOString(),
+        source: 'event_media' as const,
+      };
+      const warnings = ['The upstream does not report the capture time of this image; freshness is unknown'];
+      return { result: eventImageOutputSchema.parse({ ok: true, data, meta: this.#metadata(warnings) }), media: media.value.body };
     } finally {
       if (admitted) this.#release();
     }

@@ -2,7 +2,7 @@
 
 Read-only Frigate MCP tools with an optional **pi-durable code-mode bridge**.
 
-Implemented: [issues #1](https://github.com/punissuer/frigate-mcp/issues/1)–[#5](https://github.com/punissuer/frigate-mcp/issues/5) — the stdio `get_system_status`, `list_cameras`, `get_capabilities`, `list_events`, `get_event`, `search_events`, `list_review_items`, `get_review_item`, `get_recording_summary`, and `list_recordings` vertical slices, with managed login, camera scope, bounded retries, paged event investigation, semantic search, review segments, and recording availability. Media, restart acceptance tests, and remote Streamable HTTP are tracked in [issues #6–#9](https://github.com/punissuer/frigate-mcp/issues). **This is not the complete v1 server.**
+Implemented: [issues #1](https://github.com/punissuer/frigate-mcp/issues/1)–[#6](https://github.com/punissuer/frigate-mcp/issues/6) — the stdio `get_system_status`, `list_cameras`, `get_capabilities`, `list_events`, `get_event`, `search_events`, `list_review_items`, `get_review_item`, `get_recording_summary`, `list_recordings`, `get_latest_frame`, and `get_event_image` vertical slices, with managed login, camera scope, bounded retries, paged event investigation, semantic search, review segments, recording availability, and bounded images. Evidence clips, restart acceptance tests, and remote Streamable HTTP are tracked in [issues #7–#9](https://github.com/punissuer/frigate-mcp/issues). **This is not the complete v1 server.**
 
 ## Develop and verify
 
@@ -69,6 +69,8 @@ Environment substitution in this JSON is client-specific. It is **not** a config
 | `FRIGATE_EVENTS_PAGE_SIZE` | `50`, default event page size; range 1–200 and never above the server maximum |
 | `FRIGATE_EVENTS_MAX_WINDOW_SECONDS` | `86400`, maximum historical event window (24 hours) |
 | `FRIGATE_MAX_RESULT_BYTES` | `262144`, maximum serialized structured result size (256 KiB) |
+| `FRIGATE_MEDIA_MAX_BYTES` | `5242880`, maximum image response size (5 MiB), enforced while streaming |
+| `FRIGATE_MEDIA_TIMEOUT_MS` | `60000`, deadline for image reads |
 
 Prefer authenticated Frigate port **8971**, directly or through a trusted TLS reverse proxy, and a least-privilege viewer account. Port **5000 bypasses Frigate role enforcement**; use it only on a trusted private network, with explicit `FRIGATE_TRUSTED_UNAUTHENTICATED=true` and explicit HTTP opt-in if applicable. TLS verification stays enabled. `FRIGATE_CA_CERT_FILE` adds a private CA without disabling verification; Node's `NODE_EXTRA_CA_CERTS` also works at process startup. Never use `NODE_TLS_REJECT_UNAUTHORIZED=0`.
 
@@ -156,6 +158,20 @@ Reports the upstream recording summary for one camera: the days and hours that h
 
 Lists the recording intervals of one camera inside a required, bounded UTC Unix-second range, and reports the **gaps** between them, clipped to the requested range. A gap is missing footage, not evidence that nothing happened.
 
+### `get_latest_frame({ camera })`
+
+Fetches the most recent frame of one permitted camera (`GET /{camera}/latest.jpg`) as a bounded MCP image block plus small structured metadata.
+
+- The upstream does not report the capture time, so `captureTime` is `unknown` and `retrievedAt` is reported separately. A retrieval time is not a capture time.
+- When the camera is offline, Frigate may answer with a stored preview; the result then reports `source: "preview_fallback"` and a warning instead of claiming a live view.
+- The image is returned as an MCP image block. The structured result never carries the image bytes, and the base64 is never printed with `text()`.
+
+### `get_event_image({ eventId, kind })`
+
+Fetches the `snapshot` or `thumbnail` of one permitted object event (`GET /events/{event_id}/snapshot.jpg` or `/thumbnail.jpg`). The event is resolved first and its camera is scope-checked **before** any media is requested.
+
+A missing snapshot (`media_unavailable`), a missing or expired event (`not_found`), and a wrong MIME type (`malformed_response`) are distinct outcomes — never an empty successful image.
+
 Small structured results are mirrored as JSON text in `content` for ordinary clients. Output schemas bound camera/detector entries and identifier lengths; oversized or malformed upstream data fails rather than being silently truncated. Redirects are rejected, and upstream error bodies are never echoed. All components of a read share one deadline; reads are sequential, avoiding a fan-out beyond the configured concurrency bound.
 
 Transient failures (network errors, 408, 429, 5xx) are retried at most twice within the deadline, with jitter and bounded `Retry-After` handling. Authorization, not-found, and validation failures are never retried.
@@ -204,7 +220,7 @@ registry.install(createCodemodeExtension({
 // On shutdown: close the harness first, then sandbox.close(), then bridge.close().
 ```
 
-The bridge initializes MCP, validates the exact known read-only manifest, and registers `mcp__frigate__get_system_status`, `mcp__frigate__list_cameras`, `mcp__frigate__get_capabilities`, `mcp__frigate__list_events`, `mcp__frigate__get_event`, `mcp__frigate__search_events`, `mcp__frigate__list_review_items`, `mcp__frigate__get_review_item`, `mcp__frigate__get_recording_summary`, and `mcp__frigate__list_recordings` as replay-safe nested tools. Connect again on host restart; never persist the live client, credentials, or transport. Tool-contract upgrades require a compatible bridge; an unknown manifest fails closed.
+The bridge initializes MCP, validates the exact known read-only manifest, and registers `mcp__frigate__get_system_status`, `mcp__frigate__list_cameras`, `mcp__frigate__get_capabilities`, `mcp__frigate__list_events`, `mcp__frigate__get_event`, `mcp__frigate__search_events`, `mcp__frigate__list_review_items`, `mcp__frigate__get_review_item`, `mcp__frigate__get_recording_summary`, `mcp__frigate__list_recordings`, `mcp__frigate__get_latest_frame`, and `mcp__frigate__get_event_image` as replay-safe nested tools. Connect again on host restart; never persist the live client, credentials, or transport. Tool-contract upgrades require a compatible bridge; an unknown manifest fails closed.
 
 A code-mode investigation can use:
 
@@ -219,6 +235,19 @@ if (result.isError || !result.structuredContent.ok) {
 ```
 
 The bridge preserves MCP `content`, `structuredContent`, and `isError` in durable structured output. Returned schema-valid tool errors resolve inside scripts and must be checked. Transport/harness failures can reject: use `try/catch` or `Promise.allSettled()` when independent calls should continue.
+
+Image tools keep their image block inside the preserved `content` array, so a script selects the block and forwards it with code mode's `image()` instead of printing base64:
+
+```js
+const frame = await tools.mcp__frigate__get_latest_frame({ camera: 'front' });
+if (frame.isError || !frame.structuredContent.ok) {
+  text({ error: frame.structuredContent.error });
+} else {
+  const picture = frame.content.find(block => block.type === 'image');
+  if (picture) image(picture);
+  text(frame.structuredContent.data);
+}
+```
 
 Durable code mode journals delivered nested results; interrupted safe reads may run again and observe changed state. This slice does **not** claim exactly-once external execution, a cross-call snapshot, or completed crash/reopen acceptance coverage (issue #8). The deterministic harness/fixture example is in `examples/smoke.ts`.
 

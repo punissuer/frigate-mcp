@@ -27,6 +27,10 @@ export interface FrigateOptions {
   eventsMaxWindowSeconds?: number | undefined;
   /** Maximum serialized structured result size in bytes. */
   maxResultBytes?: number | undefined;
+  /** Maximum media (image) response size in bytes, enforced while streaming. */
+  mediaMaxBytes?: number | undefined;
+  /** Deadline for media reads in milliseconds. */
+  mediaTimeoutMs?: number | undefined;
 }
 
 const CAMERA_ID = /^[A-Za-z0-9_-]{1,64}$/;
@@ -76,10 +80,13 @@ export function validateOptions(options: FrigateOptions) {
     eventsPageSize: options.eventsPageSize ?? 50,
     eventsMaxWindowSeconds: options.eventsMaxWindowSeconds ?? 86_400,
     maxResultBytes: options.maxResultBytes ?? 256 * 1024,
+    mediaMaxBytes: options.mediaMaxBytes ?? 5 * 1024 * 1024,
+    mediaTimeoutMs: options.mediaTimeoutMs ?? 60_000,
   };
   const bounds: Record<string, number> = {
     timeoutMs: 60_000, maxResponseBytes: 5 * 1024 * 1024, maxConcurrent: 32,
     eventsPageSize: 200, eventsMaxWindowSeconds: 7 * 86_400, maxResultBytes: 1024 * 1024,
+    mediaMaxBytes: 20 * 1024 * 1024, mediaTimeoutMs: 300_000,
   };
   for (const [key, value] of Object.entries(limits)) {
     if (!Number.isSafeInteger(value) || value < 1 || value > (bounds[key] ?? 0)) {
@@ -121,6 +128,8 @@ export function optionsFromEnv(env: NodeJS.ProcessEnv): FrigateOptions {
     ['eventsPageSize', 'FRIGATE_EVENTS_PAGE_SIZE'],
     ['eventsMaxWindowSeconds', 'FRIGATE_EVENTS_MAX_WINDOW_SECONDS'],
     ['maxResultBytes', 'FRIGATE_MAX_RESULT_BYTES'],
+    ['mediaMaxBytes', 'FRIGATE_MEDIA_MAX_BYTES'],
+    ['mediaTimeoutMs', 'FRIGATE_MEDIA_TIMEOUT_MS'],
   ] as const) {
     if (env[variable] !== undefined) options[key] = Number(env[variable]);
   }

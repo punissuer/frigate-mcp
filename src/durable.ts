@@ -71,7 +71,15 @@ const toolParameters = {
     after: Type.Number(),
     before: Type.Number(),
   }, { additionalProperties: false }),
+  get_latest_frame: Type.Object({ camera: Type.String() }, { additionalProperties: false }),
+  get_event_image: Type.Object({
+    eventId: Type.String(),
+    kind: Type.Optional(Type.String()),
+  }, { additionalProperties: false }),
 } as const;
+
+/** Tools that answer with a bounded image block plus structured metadata. */
+const MEDIA_TOOLS = new Set<ToolName>(['get_latest_frame', 'get_event_image']);
 
 /**
  * A host-owned, optional bridge. Create again on host restart; persist only the
@@ -79,7 +87,7 @@ const toolParameters = {
  */
 export async function connectFrigateStdio(parameters: StdioServerParameters) {
   const transport = new StdioClientTransport(parameters);
-  const client = new Client({ name: 'frigate-durable-bridge', version: '0.5.0' });
+  const client = new Client({ name: 'frigate-durable-bridge', version: '0.6.0' });
   try {
     await client.connect(transport);
     const manifest = await client.listTools();
@@ -116,12 +124,26 @@ export async function connectFrigateStdio(parameters: StdioServerParameters) {
               timeout: 65_000,
             }));
             const parsed = toolOutputSchemas[name].safeParse(result.structuredContent);
-            if (!parsed.success || result.isError !== !parsed.data.ok || result.content.length !== 1
-              || result.content[0]?.type !== 'text' || result.content[0].text !== JSON.stringify(result.structuredContent)) {
+            if (!parsed.success || result.isError !== !parsed.data.ok) {
+              throw new Error('Invalid MCP response');
+            }
+            const text = result.content.find(block => block.type === 'text');
+            const images = result.content.filter(block => block.type === 'image');
+            if (!text || text.type !== 'text' || text.text !== JSON.stringify(result.structuredContent)) {
+              throw new Error('Invalid MCP response');
+            }
+            if (MEDIA_TOOLS.has(name)) {
+              // Media tools answer with at most one bounded image block; the
+              // structured result never carries the image bytes.
+              if (images.length > 1) throw new Error('Invalid MCP response');
+            } else if (result.content.length !== 1) {
               throw new Error('Invalid MCP response');
             }
             return {
-              output: [{ type: 'text', text: result.content[0].text }],
+              // The durable output stays text-only; a media tool's image block
+              // stays in the structured envelope so a script can select it and
+              // forward it with image() instead of printing base64.
+              output: [{ type: 'text', text: text.text }],
               structuredOutput: JSON.parse(JSON.stringify(result)) as JsonObject,
               isError: result.isError === true,
             };

@@ -4,7 +4,7 @@
 
 The user approved the spec, test boundary, and nine-ticket implementation breakdown. All nine tickets were published to [punissuer/frigate-mcp](https://github.com/punissuer/frigate-mcp/issues) with `ready-for-agent` labels and native GitHub blocking relationships.
 
-**Issues #1, #2, #3, #4, and #5 are implemented, committed, and pushed to `main`.** The working tree is clean. The next agreed step is **[#6: Frames and event images](https://github.com/punissuer/frigate-mcp/issues/6)**, which has not been started.
+**Issues #1 through #6 are implemented, committed, and pushed to `main`.** The working tree is clean. The next agreed step is **[#7: Bounded evidence clips](https://github.com/punissuer/frigate-mcp/issues/7)**, which has not been started.
 
 The user reported: “afaict it works.” This is positive feedback, not a recorded live-Frigate test result. No live NVR or provider credentials were used by the assistant.
 
@@ -12,7 +12,7 @@ The user reported: “afaict it works.” This is positive feedback, not a recor
 
 1. `README.md`: current usage, configuration, authentication, camera scope, limitations, compatibility, and durable integration.
 2. `docs/spec.md`: approved overall design and dependency graph.
-3. GitHub issue #6: its full acceptance criteria before implementing the next slice.
+3. GitHub issue #7: its full acceptance criteria before implementing the next slice.
 4. `src/contract.ts`, `src/frigate.ts`, `src/auth.ts`, `src/http.ts`, and `src/durable.ts`: the existing public contracts and integration boundary.
 
 ## What issues #1 and #2 deliver
@@ -29,7 +29,7 @@ Predetermined faux-provider tool call (no external LLM)
   → controlled Frigate HTTP fixture
 ```
 
-Ten read-only tools are exposed:
+Twelve read-only tools are exposed:
 
 - `get_system_status({})` reads `/`, `/version`, and `/stats` beneath an explicitly configured API root, and returns independent health/version/statistics outcomes, an `authorizedApiAccess` value confirmed only by a successful valid protected statistics read, allowlisted camera/detector fields, and a bounded, schema-validated success/error envelope mirrored as JSON text.
 - `list_cameras({ camera? })` reads only allowlisted fields of `GET /config` and returns permitted camera identifiers, zone names, and detection state. It never returns raw configuration, RTSP URLs, provider keys, or paths.
@@ -53,6 +53,11 @@ Camera scope (issue #2):
 - `get_review_item({ reviewId })` reads one review segment over `GET /review/{review_id}` with its severity, reviewed state, times, and permitted event references. Out-of-scope reviews are rejected without leaking references.
 - `get_recording_summary({ camera })` reports the upstream daily/hourly recording summary for one camera and states that the upstream scope covers every recorded day; an unscopable window argument is rejected rather than ignored, and the admin-only storage endpoint is never used.
 - `list_recordings({ camera, after, before })` lists a camera's recording intervals in a required bounded range and reports the gaps between them, clipped to the range. A gap is missing footage, not evidence that nothing happened.
+
+- `get_latest_frame({ camera })` fetches `GET /{camera}/latest.jpg` as a bounded MCP image block plus small metadata. The upstream reports no capture time, so `captureTime` is `unknown` and the retrieval time is reported separately; an offline camera is reported as `source: preview_fallback` instead of a live view.
+- `get_event_image({ eventId, kind })` fetches an event snapshot or thumbnail. The event camera is resolved and scope-checked before any media is requested, and a missing snapshot, a missing/expired event, and a wrong MIME type are distinct outcomes.
+
+Image bytes never enter a structured result, are never printed with `text()`, and are never logged; the bridge keeps the image block inside the preserved MCP content array so a script can select it and forward it with code mode's `image()`.
 
 Nothing is ever marked viewed, deleted, or modified: every upstream call in this slice is a read.
 
@@ -88,6 +93,7 @@ The server rejects unsafe configuration, sanitizes startup and upstream errors, 
 | `test/events.test.ts` | Event filtering, paging, completeness, scope, units, and identifier boundary tests |
 | `test/search.test.ts` | Semantic search capability states, fallback, scope, and truncation boundary tests |
 | `test/reviews.test.ts` | Review segment, recording interval, gap, and no-mutation boundary tests |
+| `test/media.test.ts` | Image retrieval, offline fallback, scope, size cap, cancellation, and forwarding boundary tests |
 | `examples/smoke.ts` | Reproducible offline end-to-end demonstration |
 | `.github/workflows/ci.yml` | Node 24 install, typecheck, tests, smoke, packaging, production audit |
 | `package.json`, `package-lock.json` | Pinned dependencies, optional durable peers, separate exports, build/test commands |
@@ -112,7 +118,7 @@ git diff --check
 
 Results:
 
-- **71 tests passed** (22 from issue #1, 14 from issue #2, 15 from issue #3, 9 from issue #4, 11 from issue #5).
+- **79 tests passed** (22 from issue #1, 14 from issue #2, 15 from issue #3, 9 from issue #4, 11 from issue #5, 8 from issue #6).
 - Typecheck/build/smoke passed.
 - Audit reported **zero vulnerabilities**.
 - Package dry-run passed.
@@ -125,6 +131,8 @@ Issue #2 tests additionally cover successful discovery, expired external tokens,
 Issue #3 tests additionally cover event filtering and translated query parameters, millisecond/reversed/oversized interval rejection, camera scope on filters and direct lookups, truncated pages with a continuation offset, duplicate identifier removal, equal timestamps, live-page shift warnings, short-page completeness, empty intervals, missing events, role denial, malformed and oversized event responses, and identifier path-traversal rejection.
 
 Issue #4 tests additionally cover a successful semantic search with distance and source, a disabled service with an explicit fallback to `list_events`, a missing endpoint reported as unsupported, camera scope on search filters and results, an empty search, malformed upstream search data, a retried transient search failure, truncated search results, and rejected units, windows, and empty queries.
+
+Issue #6 tests additionally cover image forwarding through code mode without printing base64, an offline camera reported as a preview fallback, a missing camera and a wrong media type as distinct errors, an oversized image rejected while streaming, event images resolving the camera before fetching media, missing snapshots and expired events as distinct outcomes, camera scope enforced before any media request, a conventional MCP client receiving the image block, and cancellation of an image read.
 
 Issue #5 tests additionally cover an unreviewed alert selection with its details, recording summary, and gaps; forbidden direct identifiers and camera scopes; missing review items; identical review timestamps; the review limit without invented paging; invalid review and recording ranges; an unsupported summary window; role denial; malformed and oversized review responses; and an explicit assertion that no mutating request was made.
 
@@ -163,14 +171,14 @@ References:
 - A replay-safe read may be repeated if interrupted before its result is committed and can observe newer data. No exactly-once or cross-call snapshot guarantee is claimed.
 - Host lifecycle: create the bridge again after restart; close the harness before closing the sandbox and bridge. Never persist clients, transport objects, or credentials.
 
-## Next slice: issue #6
+## Next slice: issue #7
 
 Implement the approved ticket end to end, retaining the same high-level test boundary. In particular:
 
-1. Add `get_latest_frame` over `GET /{camera}/latest.jpg` and `get_event_image` over `GET /events/{event_id}/snapshot.jpg` or `/thumbnail.jpg`, with bounded image bytes and explicit source/freshness caveats.
-2. Return bounded MCP image blocks plus small structured metadata, and preserve those image blocks through the durable bridge so code mode can forward them with `image()` instead of printing base64.
-3. Enforce the camera scope on every image request and never fetch media for an out-of-scope camera.
-4. Distinguish a capture timestamp from a retrieval timestamp, and report an unavailable image as an explicit error rather than an empty success.
+1. Add bounded evidence clip retrieval over the upstream clip routes, streamed to a configured private artifact store with atomic publication, duration/byte/timeout/quota bounds, and expiry.
+2. Return opaque artifact identifiers with MIME type, byte count, creation and expiry times, and evidence references — never upstream cookies or credential-bearing URLs.
+3. Serve artifacts as authenticated MCP resources with opaque URIs, and fail clearly for expired references.
+4. Accept bounded duplicates on replay and clean them by quota and expiry; never claim exactly-once artifact creation.
 5. Extend the bridge's known manifest/registrations, schemas, documentation, fixtures, and boundary tests as part of the slice.
 
 Do not broaden v1 into arbitrary HTTP, mutations, PTZ, Frigate Chat delegation, live streaming, monitoring/background jobs, or multi-instance federation. The user's actual agent application and deployment details have not been identified; do not modify neighboring repositories based on assumptions.
@@ -186,6 +194,7 @@ Use authenticated Frigate port 8971 or a trusted TLS reverse proxy. Port 5000 by
 | [#3](https://github.com/punissuer/frigate-mcp/issues/3) | Filter and inspect object events; landed | #2 |
 | [#4](https://github.com/punissuer/frigate-mcp/issues/4) | Semantic event search; landed | #3 |
 | [#5](https://github.com/punissuer/frigate-mcp/issues/5) | Reviews and recording availability; landed | #2 |
+| [#6](https://github.com/punissuer/frigate-mcp/issues/6) | Frames and event images; landed | #3 |
 | [#4](https://github.com/punissuer/frigate-mcp/issues/4) | Semantic event search | #3 |
 | [#5](https://github.com/punissuer/frigate-mcp/issues/5) | Reviews and recording availability | #2 |
 | [#6](https://github.com/punissuer/frigate-mcp/issues/6) | Frames and event images | #3 |
@@ -203,4 +212,5 @@ Use authenticated Frigate port 8971 or a trusted TLS reverse proxy. Port 5000 by
 - [x] Implement #3 as the next vertical slice, extending the real code-mode/stdio/HTTP-fixture tests.
 - [x] Implement #4 as the next vertical slice, extending the real code-mode/stdio/HTTP-fixture tests.
 - [x] Implement #5 as the next vertical slice, extending the real code-mode/stdio/HTTP-fixture tests.
-- [ ] Read GitHub issue #6 in full and implement it as the next vertical slice.
+- [x] Implement #6 as the next vertical slice, extending the real code-mode/stdio/HTTP-fixture tests.
+- [ ] Read GitHub issue #7 in full and implement it as the next vertical slice.

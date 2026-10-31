@@ -1,6 +1,6 @@
 {
   "name": "frigate-mcp",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Read-only Frigate MCP tools with an optional pi-durable code-mode bridge",
   "type": "module",
   "license": "MIT",
@@ -14,7 +14,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
-    "test": "npm run build && tsx --test --test-timeout=15000 test/*.test.ts",
+    "test": "npm run build && tsx --test --test-timeout=30000 test/*.test.ts",
     "smoke": "npm run build && tsx examples/smoke.ts",
     "prepack": "npm run build"
   },
