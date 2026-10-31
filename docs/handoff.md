@@ -4,7 +4,7 @@
 
 The user approved the spec, test boundary, and nine-ticket implementation breakdown. All nine tickets were published to [punissuer/frigate-mcp](https://github.com/punissuer/frigate-mcp/issues) with `ready-for-agent` labels and native GitHub blocking relationships.
 
-**Issues #1 through #6 are implemented, committed, and pushed to `main`.** The working tree is clean. The next agreed step is **[#7: Bounded evidence clips](https://github.com/punissuer/frigate-mcp/issues/7)**, which has not been started.
+**Issues #1 through #7 are implemented, committed, and pushed to `main`.** The working tree is clean. The next agreed step is **[#8: Restart and replay acceptance](https://github.com/punissuer/frigate-mcp/issues/8)**, which has not been started.
 
 The user reported: “afaict it works.” This is positive feedback, not a recorded live-Frigate test result. No live NVR or provider credentials were used by the assistant.
 
@@ -12,7 +12,7 @@ The user reported: “afaict it works.” This is positive feedback, not a recor
 
 1. `README.md`: current usage, configuration, authentication, camera scope, limitations, compatibility, and durable integration.
 2. `docs/spec.md`: approved overall design and dependency graph.
-3. GitHub issue #7: its full acceptance criteria before implementing the next slice.
+3. GitHub issue #8: its full acceptance criteria before implementing the next slice.
 4. `src/contract.ts`, `src/frigate.ts`, `src/auth.ts`, `src/http.ts`, and `src/durable.ts`: the existing public contracts and integration boundary.
 
 ## What issues #1 and #2 deliver
@@ -29,7 +29,7 @@ Predetermined faux-provider tool call (no external LLM)
   → controlled Frigate HTTP fixture
 ```
 
-Twelve read-only tools are exposed:
+Fourteen read-only tools are exposed:
 
 - `get_system_status({})` reads `/`, `/version`, and `/stats` beneath an explicitly configured API root, and returns independent health/version/statistics outcomes, an `authorizedApiAccess` value confirmed only by a successful valid protected statistics read, allowlisted camera/detector fields, and a bounded, schema-validated success/error envelope mirrored as JSON text.
 - `list_cameras({ camera? })` reads only allowlisted fields of `GET /config` and returns permitted camera identifiers, zone names, and detection state. It never returns raw configuration, RTSP URLs, provider keys, or paths.
@@ -59,6 +59,14 @@ Camera scope (issue #2):
 
 Image bytes never enter a structured result, are never printed with `text()`, and are never logged; the bridge keeps the image block inside the preserved MCP content array so a script can select it and forward it with code mode's `image()`.
 
+Evidence clips (issue #7):
+
+- `get_event_clip({ eventId })` and `get_recording_clip({ camera, start, end })` download evidence video into private temporary storage and publish it atomically. An event clip resolves the event first: its camera is scope-checked and its duration must be safely bounded before any download starts.
+- Downloads stream to disk (never buffered in memory), the byte cap is enforced while streaming, and only a complete `video/mp4` response is renamed into the artifact store. Partial and abandoned downloads are deleted.
+- The result carries an opaque artifact id and resource URI, the MIME type, byte count, creation and expiry times, and the evidence reference — never the video bytes, a local path, or a credential-bearing URL.
+- Artifacts are served as standard MCP resources with unguessable identifiers, a camera-scope re-check, an explicit failure for expired references, a storage quota, and a TTL. The durable bridge exposes `readArtifact(uri)` so a host on another machine can fetch the bytes over the transport.
+- A crash between publication and the durable result commit may leave a duplicate artifact; cleanup relies on quota and TTL, and exactly-once downloads are not claimed.
+
 Nothing is ever marked viewed, deleted, or modified: every upstream call in this slice is a read.
 
 Event policy (issue #3):
@@ -77,7 +85,8 @@ The server rejects unsafe configuration, sanitizes startup and upstream errors, 
 | Location | Purpose |
 | --- | --- |
 | `src/config.ts` | Operator options/env parsing; exact API-root handling; HTTP opt-in; credential, camera-scope, CA, and policy validation |
-| `src/http.ts` | Minimal HTTP(S) client: TLS verification, custom CA, no redirects, byte caps, cancellation, transport error kinds |
+| `src/http.ts` | Minimal HTTP(S) client: TLS verification, custom CA, no redirects, byte caps, cancellation, transport error kinds, streaming download to disk |
+| `src/artifacts.ts` | Private, quota-bounded, expiring artifact store with atomic publication and cleanup |
 | `src/auth.ts` | Session manager: managed `/login`, cookie handling, serialized refresh, single authentication retry, bearer forwarding |
 | `src/contract.ts` | Zod inputs/outputs for all three tools, sanitization schemas, release classification, expected MCP manifests |
 | `src/frigate.ts` | Bounded upstream reads, retries, status/discovery aggregation, camera scoping, sanitized errors, global concurrency admission |
@@ -94,6 +103,7 @@ The server rejects unsafe configuration, sanitizes startup and upstream errors, 
 | `test/search.test.ts` | Semantic search capability states, fallback, scope, and truncation boundary tests |
 | `test/reviews.test.ts` | Review segment, recording interval, gap, and no-mutation boundary tests |
 | `test/media.test.ts` | Image retrieval, offline fallback, scope, size cap, cancellation, and forwarding boundary tests |
+| `test/clips.test.ts` | Artifact publication, resource retrieval, quota, TTL, cleanup, and cancellation boundary tests |
 | `examples/smoke.ts` | Reproducible offline end-to-end demonstration |
 | `.github/workflows/ci.yml` | Node 24 install, typecheck, tests, smoke, packaging, production audit |
 | `package.json`, `package-lock.json` | Pinned dependencies, optional durable peers, separate exports, build/test commands |
@@ -118,7 +128,7 @@ git diff --check
 
 Results:
 
-- **79 tests passed** (22 from issue #1, 14 from issue #2, 15 from issue #3, 9 from issue #4, 11 from issue #5, 8 from issue #6).
+- **91 tests passed** (22 from issue #1, 14 from issue #2, 15 from issue #3, 9 from issue #4, 11 from issue #5, 8 from issue #6, 12 from issue #7).
 - Typecheck/build/smoke passed.
 - Audit reported **zero vulnerabilities**.
 - Package dry-run passed.
@@ -131,6 +141,8 @@ Issue #2 tests additionally cover successful discovery, expired external tokens,
 Issue #3 tests additionally cover event filtering and translated query parameters, millisecond/reversed/oversized interval rejection, camera scope on filters and direct lookups, truncated pages with a continuation offset, duplicate identifier removal, equal timestamps, live-page shift warnings, short-page completeness, empty intervals, missing events, role denial, malformed and oversized event responses, and identifier path-traversal rejection.
 
 Issue #4 tests additionally cover a successful semantic search with distance and source, a disabled service with an explicit fallback to `list_events`, a missing endpoint reported as unsupported, camera scope on search filters and results, an empty search, malformed upstream search data, a retried transient search failure, truncated search results, and rejected units, windows, and empty queries.
+
+Issue #7 tests additionally cover an event clip published as an opaque artifact, artifact bytes read by a conventional MCP resource client, the durable bridge's host-side retrieval helper, guessed and forbidden artifact identifiers, an event whose duration cannot be bounded, bounded and permitted recording clips, missing recordings and wrong clip MIME types, an oversized clip rejected while streaming, quota exhaustion, TTL expiry, and a cancelled download leaving no artifact behind.
 
 Issue #6 tests additionally cover image forwarding through code mode without printing base64, an offline camera reported as a preview fallback, a missing camera and a wrong media type as distinct errors, an oversized image rejected while streaming, event images resolving the camera before fetching media, missing snapshots and expired events as distinct outcomes, camera scope enforced before any media request, a conventional MCP client receiving the image block, and cancellation of an image read.
 
@@ -171,15 +183,14 @@ References:
 - A replay-safe read may be repeated if interrupted before its result is committed and can observe newer data. No exactly-once or cross-call snapshot guarantee is claimed.
 - Host lifecycle: create the bridge again after restart; close the harness before closing the sandbox and bridge. Never persist clients, transport objects, or credentials.
 
-## Next slice: issue #7
+## Next slice: issue #8
 
 Implement the approved ticket end to end, retaining the same high-level test boundary. In particular:
 
-1. Add bounded evidence clip retrieval over the upstream clip routes, streamed to a configured private artifact store with atomic publication, duration/byte/timeout/quota bounds, and expiry.
-2. Return opaque artifact identifiers with MIME type, byte count, creation and expiry times, and evidence references — never upstream cookies or credential-bearing URLs.
-3. Serve artifacts as authenticated MCP resources with opaque URIs, and fail clearly for expired references.
-4. Accept bounded duplicates on replay and clean them by quota and expiry; never claim exactly-once artifact creation.
-5. Extend the bridge's known manifest/registrations, schemas, documentation, fixtures, and boundary tests as part of the slice.
+1. Crash and reopen a durable harness after one nested result has committed and while a later request is in flight; confirm the committed call is not repeated and the interrupted safe call follows its replay policy.
+2. Test credential expiry and expired artifacts across a restart, plus cancellation and clean transport shutdown.
+3. Confirm the durable bridge is re-established after a host restart and that no client, transport, or credential is persisted in durable state.
+4. Extend the fixtures and boundary tests as part of the slice; do not weaken the replay claims of the current documentation.
 
 Do not broaden v1 into arbitrary HTTP, mutations, PTZ, Frigate Chat delegation, live streaming, monitoring/background jobs, or multi-instance federation. The user's actual agent application and deployment details have not been identified; do not modify neighboring repositories based on assumptions.
 
@@ -195,6 +206,7 @@ Use authenticated Frigate port 8971 or a trusted TLS reverse proxy. Port 5000 by
 | [#4](https://github.com/punissuer/frigate-mcp/issues/4) | Semantic event search; landed | #3 |
 | [#5](https://github.com/punissuer/frigate-mcp/issues/5) | Reviews and recording availability; landed | #2 |
 | [#6](https://github.com/punissuer/frigate-mcp/issues/6) | Frames and event images; landed | #3 |
+| [#7](https://github.com/punissuer/frigate-mcp/issues/7) | Bounded evidence clips; landed | #3, #5 |
 | [#4](https://github.com/punissuer/frigate-mcp/issues/4) | Semantic event search | #3 |
 | [#5](https://github.com/punissuer/frigate-mcp/issues/5) | Reviews and recording availability | #2 |
 | [#6](https://github.com/punissuer/frigate-mcp/issues/6) | Frames and event images | #3 |
@@ -213,4 +225,5 @@ Use authenticated Frigate port 8971 or a trusted TLS reverse proxy. Port 5000 by
 - [x] Implement #4 as the next vertical slice, extending the real code-mode/stdio/HTTP-fixture tests.
 - [x] Implement #5 as the next vertical slice, extending the real code-mode/stdio/HTTP-fixture tests.
 - [x] Implement #6 as the next vertical slice, extending the real code-mode/stdio/HTTP-fixture tests.
-- [ ] Read GitHub issue #7 in full and implement it as the next vertical slice.
+- [x] Implement #7 as the next vertical slice, extending the real code-mode/stdio/HTTP-fixture tests.
+- [ ] Read GitHub issue #8 in full and implement it as the next vertical slice.

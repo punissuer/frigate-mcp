@@ -1,4 +1,6 @@
 import { loadCaCertificate } from './http.js';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 export interface FrigateOptions {
   /** Exact API root, including any reverse-proxy prefix and /api. */
@@ -31,6 +33,16 @@ export interface FrigateOptions {
   mediaMaxBytes?: number | undefined;
   /** Deadline for media reads in milliseconds. */
   mediaTimeoutMs?: number | undefined;
+  /** Directory for private evidence artifacts. */
+  artifactDir?: string | undefined;
+  /** Total storage quota for published artifacts, in bytes. */
+  artifactQuotaBytes?: number | undefined;
+  /** Lifetime of a published artifact, in seconds. */
+  artifactTtlSeconds?: number | undefined;
+  /** Maximum evidence clip duration in seconds. */
+  clipMaxDurationSeconds?: number | undefined;
+  /** Maximum evidence clip size in bytes. */
+  clipMaxBytes?: number | undefined;
 }
 
 const CAMERA_ID = /^[A-Za-z0-9_-]{1,64}$/;
@@ -82,11 +94,17 @@ export function validateOptions(options: FrigateOptions) {
     maxResultBytes: options.maxResultBytes ?? 256 * 1024,
     mediaMaxBytes: options.mediaMaxBytes ?? 5 * 1024 * 1024,
     mediaTimeoutMs: options.mediaTimeoutMs ?? 60_000,
+    artifactQuotaBytes: options.artifactQuotaBytes ?? 1024 * 1024 * 1024,
+    artifactTtlSeconds: options.artifactTtlSeconds ?? 3_600,
+    clipMaxDurationSeconds: options.clipMaxDurationSeconds ?? 120,
+    clipMaxBytes: options.clipMaxBytes ?? 50 * 1024 * 1024,
   };
   const bounds: Record<string, number> = {
     timeoutMs: 60_000, maxResponseBytes: 5 * 1024 * 1024, maxConcurrent: 32,
     eventsPageSize: 200, eventsMaxWindowSeconds: 7 * 86_400, maxResultBytes: 1024 * 1024,
     mediaMaxBytes: 20 * 1024 * 1024, mediaTimeoutMs: 300_000,
+    artifactQuotaBytes: 64 * 1024 * 1024 * 1024, artifactTtlSeconds: 7 * 86_400,
+    clipMaxDurationSeconds: 600, clipMaxBytes: 200 * 1024 * 1024,
   };
   for (const [key, value] of Object.entries(limits)) {
     if (!Number.isSafeInteger(value) || value < 1 || value > (bounds[key] ?? 0)) {
@@ -97,6 +115,7 @@ export function validateOptions(options: FrigateOptions) {
     ...limits,
     root: url,
     ca,
+    artifactDir: options.artifactDir ?? join(tmpdir(), 'frigate-mcp-artifacts'),
     cameras,
     cameraScopeRestricted: cameras.length > 0,
     bearerToken: options.bearerToken,
@@ -118,6 +137,7 @@ export function optionsFromEnv(env: NodeJS.ProcessEnv): FrigateOptions {
   if (env.FRIGATE_PASSWORD !== undefined) options.password = env.FRIGATE_PASSWORD;
   if (env.FRIGATE_AUTH_COOKIE_NAME !== undefined) options.authCookieName = env.FRIGATE_AUTH_COOKIE_NAME;
   if (env.FRIGATE_CA_CERT_FILE !== undefined) options.caCertFile = env.FRIGATE_CA_CERT_FILE;
+  if (env.FRIGATE_ARTIFACT_DIR !== undefined) options.artifactDir = env.FRIGATE_ARTIFACT_DIR;
   if (env.FRIGATE_CAMERAS !== undefined) {
     options.cameras = env.FRIGATE_CAMERAS.split(',').map(value => value.trim()).filter(Boolean);
   }
@@ -130,6 +150,10 @@ export function optionsFromEnv(env: NodeJS.ProcessEnv): FrigateOptions {
     ['maxResultBytes', 'FRIGATE_MAX_RESULT_BYTES'],
     ['mediaMaxBytes', 'FRIGATE_MEDIA_MAX_BYTES'],
     ['mediaTimeoutMs', 'FRIGATE_MEDIA_TIMEOUT_MS'],
+    ['artifactQuotaBytes', 'FRIGATE_ARTIFACT_QUOTA_BYTES'],
+    ['artifactTtlSeconds', 'FRIGATE_ARTIFACT_TTL_SECONDS'],
+    ['clipMaxDurationSeconds', 'FRIGATE_CLIP_MAX_DURATION_SECONDS'],
+    ['clipMaxBytes', 'FRIGATE_CLIP_MAX_BYTES'],
   ] as const) {
     if (env[variable] !== undefined) options[key] = Number(env[variable]);
   }

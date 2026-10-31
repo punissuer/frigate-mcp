@@ -2,7 +2,7 @@
 
 Read-only Frigate MCP tools with an optional **pi-durable code-mode bridge**.
 
-Implemented: [issues #1](https://github.com/punissuer/frigate-mcp/issues/1)–[#6](https://github.com/punissuer/frigate-mcp/issues/6) — the stdio `get_system_status`, `list_cameras`, `get_capabilities`, `list_events`, `get_event`, `search_events`, `list_review_items`, `get_review_item`, `get_recording_summary`, `list_recordings`, `get_latest_frame`, and `get_event_image` vertical slices, with managed login, camera scope, bounded retries, paged event investigation, semantic search, review segments, recording availability, and bounded images. Evidence clips, restart acceptance tests, and remote Streamable HTTP are tracked in [issues #7–#9](https://github.com/punissuer/frigate-mcp/issues). **This is not the complete v1 server.**
+Implemented: [issues #1](https://github.com/punissuer/frigate-mcp/issues/1)–[#7](https://github.com/punissuer/frigate-mcp/issues/7) — the stdio investigation surface with managed login, camera scope, bounded retries, paged event investigation, semantic search, review segments, recording availability, bounded images, and private expiring evidence artifacts. Restart acceptance tests and remote Streamable HTTP are tracked in [issues #8–#9](https://github.com/punissuer/frigate-mcp/issues). **This is not the complete v1 server.**
 
 ## Develop and verify
 
@@ -71,6 +71,11 @@ Environment substitution in this JSON is client-specific. It is **not** a config
 | `FRIGATE_MAX_RESULT_BYTES` | `262144`, maximum serialized structured result size (256 KiB) |
 | `FRIGATE_MEDIA_MAX_BYTES` | `5242880`, maximum image response size (5 MiB), enforced while streaming |
 | `FRIGATE_MEDIA_TIMEOUT_MS` | `60000`, deadline for image reads |
+| `FRIGATE_ARTIFACT_DIR` | A private directory for evidence artifacts; defaults to a per-user temporary directory |
+| `FRIGATE_ARTIFACT_QUOTA_BYTES` | `1073741824`, total storage quota for published artifacts (1 GiB) |
+| `FRIGATE_ARTIFACT_TTL_SECONDS` | `3600`, lifetime of a published artifact |
+| `FRIGATE_CLIP_MAX_DURATION_SECONDS` | `120`, maximum evidence clip duration |
+| `FRIGATE_CLIP_MAX_BYTES` | `52428800`, maximum evidence clip size (50 MiB) |
 
 Prefer authenticated Frigate port **8971**, directly or through a trusted TLS reverse proxy, and a least-privilege viewer account. Port **5000 bypasses Frigate role enforcement**; use it only on a trusted private network, with explicit `FRIGATE_TRUSTED_UNAUTHENTICATED=true` and explicit HTTP opt-in if applicable. TLS verification stays enabled. `FRIGATE_CA_CERT_FILE` adds a private CA without disabling verification; Node's `NODE_EXTRA_CA_CERTS` also works at process startup. Never use `NODE_TLS_REJECT_UNAUTHORIZED=0`.
 
@@ -172,6 +177,16 @@ Fetches the `snapshot` or `thumbnail` of one permitted object event (`GET /event
 
 A missing snapshot (`media_unavailable`), a missing or expired event (`not_found`), and a wrong MIME type (`malformed_response`) are distinct outcomes — never an empty successful image.
 
+### `get_event_clip({ eventId })` and `get_recording_clip({ camera, start, end })`
+
+Retrieve evidence video as a **private, expiring artifact**.
+
+- The event clip resolves the event first: its camera is scope-checked and its duration must be safely bounded (an in-progress event, or one longer than `FRIGATE_CLIP_MAX_DURATION_SECONDS`, is refused before any download starts). The recording clip requires an explicit bounded UTC Unix-second range on a permitted camera.
+- Downloads stream to private temporary storage and are published **atomically**: only a complete, size-bounded, `video/mp4` response is renamed into the artifact store. A partial or abandoned download is deleted, and video is never buffered in memory.
+- The result carries an opaque `artifactId` and `uri`, the MIME type, the byte count, the creation and expiry times, and the evidence reference (camera, event id, or interval). It never carries the video bytes, a server-local path, or a credential-bearing URL.
+- The artifact URI is served as a standard MCP resource. Identifiers are unguessable, guessed identifiers are refused, the camera scope is re-checked on read, and an expired artifact fails explicitly even if a durable transcript still mentions it.
+- A crash between publication and the durable result commit can leave a duplicate artifact. Cleanup relies on the quota and the TTL; exactly-once download effects are not claimed.
+
 Small structured results are mirrored as JSON text in `content` for ordinary clients. Output schemas bound camera/detector entries and identifier lengths; oversized or malformed upstream data fails rather than being silently truncated. Redirects are rejected, and upstream error bodies are never echoed. All components of a read share one deadline; reads are sequential, avoiding a fan-out beyond the configured concurrency bound.
 
 Transient failures (network errors, 408, 429, 5xx) are retried at most twice within the deadline, with jitter and bounded `Retry-After` handling. Authorization, not-found, and validation failures are never retried.
@@ -247,6 +262,18 @@ if (frame.isError || !frame.structuredContent.ok) {
   if (picture) image(picture);
   text(frame.structuredContent.data);
 }
+```
+
+### Retrieving an evidence artifact on the host
+
+The server and the agent may run on different hosts, so artifact bytes are fetched over the MCP transport — never from a server-local path, and code mode never plays MP4:
+
+```ts
+const clip = await bridge.extension.tools.find(t => t.name === 'mcp__frigate__get_event_clip');
+const result = await clip.execute({ eventId: '1700000000.100000' }, api, context);
+const uri = result.structuredOutput.structuredContent.data.uri;
+const artifact = await bridge.readArtifact(uri); // { mimeType, byteLength, blob }
+await fs.writeFile('evidence.mp4', Buffer.from(artifact.blob, 'base64'));
 ```
 
 Durable code mode journals delivered nested results; interrupted safe reads may run again and observe changed state. This slice does **not** claim exactly-once external execution, a cross-call snapshot, or completed crash/reopen acceptance coverage (issue #8). The deterministic harness/fixture example is in `examples/smoke.ts`.

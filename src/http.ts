@@ -1,6 +1,8 @@
 import { readFileSync } from 'node:fs';
+import { createWriteStream } from 'node:fs';
 import { request as httpRequest, type IncomingHttpHeaders } from 'node:http';
 import { request as httpsRequest } from 'node:https';
+import { pipeline } from 'node:stream/promises';
 
 export type TransportFailureKind = 'timeout' | 'cancelled' | 'unreachable' | 'payload_too_large';
 
@@ -35,6 +37,80 @@ export function loadCaCertificate(path: string): Buffer {
     throw new Error('FRIGATE_CA_CERT_FILE must contain a PEM certificate');
   }
   return pem;
+}
+
+export interface StreamRequest {
+  url: URL;
+  headers?: Record<string, string>;
+  signal: AbortSignal;
+  maxBytes: number;
+  destination: string;
+  ca?: Buffer;
+}
+
+/**
+ * Stream an upstream response into a file without buffering it in memory.
+ *
+ * The byte limit is enforced while streaming: an oversized response is cut
+ * off and the partial file is removed by the caller.
+ */
+export async function streamToFile(options: StreamRequest): Promise<{ status: number; headers: IncomingHttpHeaders; bytes: number }> {
+  const { url, signal, maxBytes, destination } = options;
+  if (signal.aborted) throw new TransportError('cancelled', 'Upstream request cancelled');
+  const secure = url.protocol === 'https:';
+  const request = secure ? httpsRequest : httpRequest;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (action: () => void) => { if (!settled) { settled = true; action(); } };
+    const fail = (error: Error) => finish(() => reject(error));
+    const req = request({
+      protocol: url.protocol,
+      hostname: url.hostname,
+      port: url.port || (secure ? 443 : 80),
+      path: `${url.pathname}${url.search}`,
+      method: 'GET',
+      headers: options.headers ?? {},
+      ...(secure ? { ca: options.ca, servername: url.hostname, rejectUnauthorized: true } : {}),
+    }, res => {
+      const status = res.statusCode ?? 0;
+      const declared = Number(res.headers['content-length'] ?? '0');
+      if (Number.isFinite(declared) && declared > maxBytes) {
+        res.destroy();
+        fail(new TransportError('payload_too_large', 'Upstream media exceeded the media byte limit'));
+        return;
+      }
+      let bytes = 0;
+      res.on('data', (chunk: Buffer) => {
+        bytes += chunk.length;
+        if (bytes > maxBytes) {
+          res.destroy();
+          fail(new TransportError('payload_too_large', 'Upstream media exceeded the media byte limit'));
+        }
+      });
+      const sink = createWriteStream(destination, { mode: 0o600 });
+      pipeline(res, sink).then(() => {
+        if (bytes > maxBytes) {
+          fail(new TransportError('payload_too_large', 'Upstream media exceeded the media byte limit'));
+          return;
+        }
+        finish(() => resolve({ status, headers: res.headers, bytes }));
+      }).catch(() => {
+        fail(new TransportError(signal.aborted ? 'cancelled' : 'unreachable', 'Upstream media download failed'));
+      });
+    });
+    req.on('error', () => {
+      if (signal.aborted) {
+        fail(new TransportError(signal.reason?.name === 'TimeoutError' ? 'timeout' : 'cancelled', 'Upstream request cancelled'));
+        return;
+      }
+      fail(new TransportError('unreachable', 'Unable to reach Frigate'));
+    });
+    signal.addEventListener('abort', () => {
+      req.destroy();
+      fail(new TransportError(signal.reason?.name === 'TimeoutError' ? 'timeout' : 'cancelled', 'Upstream request cancelled'));
+    }, { once: true });
+    req.end();
+  });
 }
 
 /**

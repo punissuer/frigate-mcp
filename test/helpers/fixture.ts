@@ -102,6 +102,12 @@ export const events = [
     data: { score: 0.75, average_estimated_speed: 3.2, description: 'SECRET car description' },
   },
   {
+    id: '1700000300.400000', camera: 'front', label: 'person', sub_label: null, zones: ['porch'],
+    start_time: 1700009000.4, end_time: null, has_clip: false, has_snapshot: true,
+    retain_indefinitely: false, plus_id: null, top_score: 0.5, false_positive: false,
+    data: { score: 0.5, average_estimated_speed: 0.4, description: 'SECRET in-progress description' },
+  },
+  {
     id: '1700000200.300000', camera: 'back', label: 'person', sub_label: null, zones: ['alley'],
     start_time: 1700000200.3, end_time: 1700000210.9, has_clip: true, has_snapshot: false,
     retain_indefinitely: false, plus_id: null, top_score: 0.6, false_positive: false,
@@ -137,6 +143,17 @@ export interface FixtureOptions {
     missing?: string[];
     /** Cameras whose latest frame is served with a different MIME type. */
     wrongMime?: string[];
+  };
+  /** Model the clip endpoints. */
+  clips?: {
+    /** Bytes served for a clip. */
+    bytes?: Buffer;
+    /** Serve a different MIME type. */
+    wrongMime?: boolean;
+    /** Answer with 404 (no recording for the interval). */
+    missing?: boolean;
+    /** Stall the response so a deadline or cancellation can be tested. */
+    stall?: boolean;
   };
   /** Serve HTTPS with an operator-supplied certificate. */
   tls?: { key: Buffer; cert: Buffer };
@@ -190,6 +207,22 @@ export async function startFixture(options: FixtureOptions | Override = {}) {
       if (!authorized(req)) { unauthorized(res); return; }
       res.setHeader('content-type', 'application/json');
       res.end(JSON.stringify(settings.config ?? configuration));
+    } else if (/^\/nvr\/api\/events\/[A-Za-z0-9_.-]+\/clip\.mp4$/.test(path)
+      || /^\/nvr\/api\/[A-Za-z0-9_-]+\/start\/[0-9.]+\/end\/[0-9.]+\/clip\.mp4$/.test(path)) {
+      if (!authorized(req)) { unauthorized(res); return; }
+      const clips = settings.clips ?? {};
+      if (clips.stall) {
+        res.writeHead(200, { 'content-type': 'video/mp4' });
+        res.write(Buffer.alloc(16, 1));
+        return true;
+      }
+      if (clips.missing) {
+        res.writeHead(404, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ success: false, message: 'No recordings found' }));
+        return true;
+      }
+      res.setHeader('content-type', clips.wrongMime ? 'text/html' : 'video/mp4');
+      res.end(clips.bytes ?? jpegBytes);
     } else if (/^\/nvr\/api\/[A-Za-z0-9_-]+\/latest\.jpg$/.test(path)) {
       if (!authorized(req)) { unauthorized(res); return; }
       const camera = path.split('/')[3]!;

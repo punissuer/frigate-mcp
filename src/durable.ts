@@ -76,6 +76,12 @@ const toolParameters = {
     eventId: Type.String(),
     kind: Type.Optional(Type.String()),
   }, { additionalProperties: false }),
+  get_event_clip: Type.Object({ eventId: Type.String() }, { additionalProperties: false }),
+  get_recording_clip: Type.Object({
+    camera: Type.String(),
+    start: Type.Number(),
+    end: Type.Number(),
+  }, { additionalProperties: false }),
 } as const;
 
 /** Tools that answer with a bounded image block plus structured metadata. */
@@ -87,7 +93,7 @@ const MEDIA_TOOLS = new Set<ToolName>(['get_latest_frame', 'get_event_image']);
  */
 export async function connectFrigateStdio(parameters: StdioServerParameters) {
   const transport = new StdioClientTransport(parameters);
-  const client = new Client({ name: 'frigate-durable-bridge', version: '0.6.0' });
+  const client = new Client({ name: 'frigate-durable-bridge', version: '0.7.0' });
   try {
     await client.connect(transport);
     const manifest = await client.listTools();
@@ -159,6 +165,25 @@ export async function connectFrigateStdio(parameters: StdioServerParameters) {
       close: () => client.close(),
       /** Useful for lifecycle supervision; never persisted or sent to the model. */
       get pid() { return transport.pid; },
+      /**
+       * Retrieve an evidence artifact's bytes through the MCP resource URI the
+       * clip tools returned. The server and the agent may run on different
+       * hosts, so the bytes are fetched over the transport, never from a
+       * server-local path.
+       */
+      async readArtifact(uri: string) {
+        if (!/^frigate:\/\/artifact\/[a-f0-9]{32}$/.test(uri)) {
+          throw new Error('Unknown Frigate artifact URI');
+        }
+        const result = await client.readResource({ uri });
+        const contents = result.contents;
+        if (contents.length !== 1) throw new Error('The artifact response was not a single resource');
+        const content = contents[0]!;
+        if (!('blob' in content) || content.mimeType !== 'video/mp4' || typeof content.blob !== 'string') {
+          throw new Error('The artifact response was not a video');
+        }
+        return { mimeType: content.mimeType, byteLength: Buffer.byteLength(content.blob, 'base64'), blob: content.blob };
+      },
     };
   } catch {
     await client.close().catch(() => undefined);

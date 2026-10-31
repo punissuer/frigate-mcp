@@ -1,6 +1,10 @@
 import { validateOptions, type FrigateOptions } from './config.js';
 import { Session, SessionError, type SessionMode } from './auth.js';
-import { performRequest, TransportError } from './http.js';
+import { performRequest, streamToFile, TransportError } from './http.js';
+import { ArtifactError, ArtifactStore, type ArtifactEvidence } from './artifacts.js';
+import { randomBytes } from 'node:crypto';
+import { rm } from 'node:fs/promises';
+import { join } from 'node:path';
 import {
   compatibility,
   capabilitiesOutputSchema,
@@ -11,6 +15,8 @@ import {
   listReviewItemsOutputSchema,
   latestFrameOutputSchema,
   eventImageOutputSchema,
+  eventClipOutputSchema,
+  recordingClipOutputSchema,
   getRecordingSummaryOutputSchema,
   getReviewItemOutputSchema,
   searchEventsOutputSchema,
@@ -18,8 +24,10 @@ import {
   statisticsSchema,
   type CapabilitiesResult,
   type EventSummary,
+  type EventClipResult,
   type EventImageResult,
   type GetEventResult,
+  type RecordingClipResult,
   type LatestFrameResult,
   type GetRecordingSummaryResult,
   type GetReviewItemResult,
@@ -97,10 +105,16 @@ const sleep = (ms: number, signal: AbortSignal) => new Promise<void>((resolve, r
 export class FrigateClient {
   readonly #options;
   readonly #session: Session;
+  readonly #artifacts: ArtifactStore;
   #active = 0;
 
-  constructor(options: FrigateOptions) {
+  constructor(options: FrigateOptions, artifacts?: ArtifactStore) {
     this.#options = validateOptions(options);
+    this.#artifacts = artifacts ?? new ArtifactStore({
+      directory: this.#options.artifactDir,
+      quotaBytes: this.#options.artifactQuotaBytes,
+      ttlSeconds: this.#options.artifactTtlSeconds,
+    });
     this.#session = new Session({
       root: this.#options.root,
       bearerToken: this.#options.bearerToken,
@@ -113,6 +127,7 @@ export class FrigateClient {
   }
 
   get sessionMode(): SessionMode { return this.#session.mode; }
+  get artifacts(): ArtifactStore { return this.#artifacts; }
 
   /** Request an upstream read, with bounded transient retries and one authentication retry. */
   async #request(path: string, accept: string, signal: AbortSignal): Promise<Outcome<RawResponse>> {
@@ -1062,6 +1077,148 @@ export class FrigateClient {
       };
       const warnings = ['The upstream does not report the capture time of this image; freshness is unknown'];
       return { result: eventImageOutputSchema.parse({ ok: true, data, meta: this.#metadata(warnings) }), media: media.value.body };
+    } finally {
+      if (admitted) this.#release();
+    }
+  }
+
+  /**
+   * Download a clip into private temporary storage and publish it atomically.
+   *
+   * The bytes are never buffered in memory and a partial download is never
+   * published: only a complete, validated, size-bounded file is renamed into
+   * the artifact store.
+   */
+  async #downloadClip(path: string, evidence: ArtifactEvidence, signal: AbortSignal): Promise<Outcome<{ artifactId: string; uri: string; mimeType: string; byteLength: number; createdAt: string; expiresAt: string }>> {
+    await this.#artifacts.init();
+    const temporary = join(this.#artifacts.directory, `${randomBytes(16).toString('hex')}.tmp`);
+    try {
+      const headers = await this.#session.headers(signal);
+      const response = await streamToFile({
+        url: new URL(path, this.#options.root),
+        headers: { accept: 'video/mp4', ...headers },
+        signal,
+        maxBytes: this.#options.clipMaxBytes,
+        destination: temporary,
+        ...(this.#options.ca ? { ca: this.#options.ca } : {}),
+      });
+      if (response.status !== 200) {
+        await rm(temporary, { force: true }).catch(() => undefined);
+        return { ok: false, error: this.#statusError(response.status) };
+      }
+      const mime = (Array.isArray(response.headers['content-type']) ? response.headers['content-type'][0] : response.headers['content-type'] ?? '')
+        .split(';')[0]?.trim().toLowerCase();
+      if (mime !== 'video/mp4') {
+        await rm(temporary, { force: true }).catch(() => undefined);
+        return { ok: false, error: problem('malformed_response', 'Unexpected Frigate clip content type') };
+      }
+      const record = await this.#artifacts.publish(temporary, { mimeType: 'video/mp4', evidence });
+      return {
+        ok: true,
+        value: {
+          artifactId: record.id,
+          uri: record.uri,
+          mimeType: record.mimeType,
+          byteLength: record.byteLength,
+          createdAt: record.createdAt,
+          expiresAt: record.expiresAt,
+        },
+      };
+    } catch (error) {
+      await rm(temporary, { force: true }).catch(() => undefined);
+      if (error instanceof TransportError) {
+        if (error.kind === 'timeout') return { ok: false, error: problem('timeout', 'Frigate media deadline exceeded', true) };
+        if (error.kind === 'cancelled') return { ok: false, error: problem('cancelled', 'Frigate request cancelled') };
+        if (error.kind === 'payload_too_large') return { ok: false, error: problem('payload_too_large', 'Frigate clip exceeded the clip byte limit') };
+        return { ok: false, error: problem('unreachable', 'Unable to reach Frigate', true) };
+      }
+      if (error instanceof ArtifactError) {
+        if (error.failure.kind === 'quota') return { ok: false, error: problem('quota_exceeded', 'The artifact store quota is exhausted', false) };
+        return { ok: false, error: problem('upstream_error', 'The clip could not be published', true) };
+      }
+      return { ok: false, error: problem('upstream_error', 'The clip could not be retrieved', true) };
+    }
+  }
+
+  async getEventClip(eventId: string, cancellation?: AbortSignal): Promise<EventClipResult> {
+    const deadline = AbortSignal.timeout(this.#options.mediaTimeoutMs);
+    const signal = cancellation ? AbortSignal.any([cancellation, deadline]) : deadline;
+    const failure = (error: ReadError) =>
+      eventClipOutputSchema.parse({
+        ok: false,
+        error,
+        data: { mimeType: 'video/mp4', byteLength: 0, createdAt: new Date().toISOString(), expiresAt: new Date().toISOString(), evidence: { kind: 'event_clip' } },
+        meta: this.#metadata([]),
+      });
+    if (!/^[A-Za-z0-9_.-]{1,64}$/.test(eventId) || eventId.includes('..')) {
+      return failure(problem('invalid_request', 'Invalid event identifier'));
+    }
+    const admitted = this.#admit();
+    try {
+      // The event is resolved first: its camera and duration must be known
+      // before any download starts.
+      const event = await this.#request(`events/${encodeURIComponent(eventId)}`, 'application/json', signal);
+      if (!event.ok) return failure(event.error);
+      if (event.value.status === 404) return failure(problem('not_found', 'Frigate event not found; it may have expired', false, 404));
+      if (event.value.status !== 200) return failure(this.#statusError(event.value.status));
+      let parsed: unknown;
+      try { parsed = JSON.parse(event.value.body.toString('utf8')); }
+      catch { return failure(problem('malformed_response', 'Unexpected Frigate event response')); }
+      const sanitized = this.#sanitizeEvent(parsed);
+      if (!sanitized.ok) return failure(sanitized.error);
+      if (this.#options.cameraScopeRestricted && !this.#options.cameras.includes(sanitized.value.camera)) {
+        return failure(problem('forbidden', 'The event is outside the configured camera scope'));
+      }
+      if (sanitized.value.endTime === undefined) {
+        return failure(problem('invalid_request', 'The event is still in progress; its duration cannot be safely bounded'));
+      }
+      const duration = sanitized.value.endTime - sanitized.value.startTime;
+      if (!(duration > 0) || duration > this.#options.clipMaxDurationSeconds) {
+        return failure(problem('invalid_request', `The event duration exceeds the ${this.#options.clipMaxDurationSeconds} second clip limit`));
+      }
+      const clip = await this.#downloadClip(`events/${encodeURIComponent(eventId)}/clip.mp4`, {
+        kind: 'event_clip', camera: sanitized.value.camera, eventId,
+      }, signal);
+      if (!clip.ok) return failure(clip.error);
+      const data = { ...clip.value, evidence: { kind: 'event_clip' as const, camera: sanitized.value.camera, eventId } };
+      return eventClipOutputSchema.parse({ ok: true, data, meta: this.#metadata(['The clip is a private artifact; retrieve its bytes through the MCP resource URI']) });
+    } finally {
+      if (admitted) this.#release();
+    }
+  }
+
+  async getRecordingClip(input: { camera: string; start: number; end: number }, cancellation?: AbortSignal): Promise<RecordingClipResult> {
+    const deadline = AbortSignal.timeout(this.#options.mediaTimeoutMs);
+    const signal = cancellation ? AbortSignal.any([cancellation, deadline]) : deadline;
+    const failure = (error: ReadError) =>
+      recordingClipOutputSchema.parse({
+        ok: false,
+        error,
+        data: { mimeType: 'video/mp4', byteLength: 0, createdAt: new Date().toISOString(), expiresAt: new Date().toISOString(), evidence: { kind: 'recording_clip', camera: input.camera } },
+        meta: this.#metadata([]),
+      });
+    if (Math.abs(input.start) > 1e11 || Math.abs(input.end) > 1e11) {
+      return failure(problem('invalid_request', 'Timestamps must be UTC Unix seconds, not milliseconds'));
+    }
+    if (!(input.end > input.start)) {
+      return failure(problem('invalid_request', 'Interval start must be earlier than its end'));
+    }
+    if (input.end - input.start > this.#options.clipMaxDurationSeconds) {
+      return failure(problem('invalid_request', `The interval exceeds the ${this.#options.clipMaxDurationSeconds} second clip limit`));
+    }
+    if (this.#options.cameraScopeRestricted && !this.#options.cameras.includes(input.camera)) {
+      return failure(problem('forbidden', 'The camera is outside the configured scope'));
+    }
+    const admitted = this.#admit();
+    try {
+      const clip = await this.#downloadClip(
+        `${input.camera}/start/${input.start}/end/${input.end}/clip.mp4`,
+        { kind: 'recording_clip', camera: input.camera, start: input.start, end: input.end },
+        signal,
+      );
+      if (!clip.ok) return failure(clip.error);
+      const data = { ...clip.value, evidence: { kind: 'recording_clip' as const, camera: input.camera, start: input.start, end: input.end } };
+      return recordingClipOutputSchema.parse({ ok: true, data, meta: this.#metadata(['The clip is a private artifact; retrieve its bytes through the MCP resource URI']) });
     } finally {
       if (admitted) this.#release();
     }
