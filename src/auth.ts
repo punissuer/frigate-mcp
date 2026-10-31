@@ -12,12 +12,14 @@ export interface SessionOptions {
   maxBytes: number;
   /** Operator-supplied CA bundle for a private TLS deployment. */
   ca?: Buffer | undefined;
+  /** One exact server certificate to pin (self-signed deployments). */
+  pinCertificate?: Buffer | undefined;
   /** Renew the managed session this many seconds before the JWT expires. */
   refreshWindowSeconds?: number | undefined;
 }
 
 export class SessionError extends Error {
-  constructor(readonly code: 'authentication' | 'unreachable' | 'upstream_error' | 'malformed_response', message: string, readonly status?: number) {
+  constructor(readonly code: 'authentication' | 'unreachable' | 'upstream_error' | 'malformed_response' | 'certificate_trust' | 'certificate_hostname', message: string, readonly status?: number) {
     super(message);
   }
 }
@@ -139,9 +141,12 @@ export class Session {
         signal,
         maxBytes: this.#options.maxBytes,
         ...(this.#options.ca ? { ca: this.#options.ca } : {}),
+        ...(this.#options.pinCertificate ? { pinCertificate: this.#options.pinCertificate } : {}),
       });
     } catch (error) {
       if (error instanceof TransportError) {
+        if (error.kind === 'certificate_trust') throw new SessionError('certificate_trust', "Frigate's certificate is not trusted; set FRIGATE_CA_CERT_FILE to the certificate authority");
+        if (error.kind === 'certificate_hostname') throw new SessionError('certificate_hostname', "Frigate's certificate does not match this host; set FRIGATE_TLS_PIN_CERT_FILE to pin the exact certificate");
         throw new SessionError(error.kind === 'timeout' ? 'upstream_error' : 'unreachable', 'Unable to reach Frigate to sign in');
       }
       throw error;

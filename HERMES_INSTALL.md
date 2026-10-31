@@ -15,9 +15,9 @@ tools, contracts, camera scope, and policy limits either way.
 - **Node.js 24 LTS** (24.15.0 or newer within 24.x) on the machine that runs
   the server.
 - A Frigate instance you can reach, and a **least-privilege viewer account**.
-- Prefer Frigate's authenticated port **8971** (directly or behind a trusted
-  TLS reverse proxy). Port **5000 bypasses Frigate's role enforcement** — only
-  use it on a trusted private network, and never publish it.
+- Prefer Frigate's authenticated port **8971** over HTTPS. Port **5000** is the
+  internal interface: it bypasses Frigate's role enforcement, and it is often
+  not reachable from other hosts at all.
 
 Build the server once (Hermes spawns the built entry point):
 
@@ -29,13 +29,25 @@ npm run build          # produces dist/cli.js
 
 ## 2. Put the credentials in Hermes' secret store
 
-Hermes keeps secrets in `~/.hermes/.env` (mode 600) and interpolates
-`${VAR}` placeholders into the MCP server configuration. Keep the Frigate
-password **out** of `config.yaml`:
+Hermes keeps secrets in the **active profile's** `.env` (mode 600) and
+interpolates `${VAR}` placeholders into the MCP server configuration. Keep the
+Frigate password **out** of `config.yaml`.
+
+> **Profile pitfall.** Hermes keeps one `config.yaml` and one `.env` **per
+> profile** (`~/.hermes/profiles/<name>/`). The MCP server entry and the
+> secrets must live in the **same** profile: an entry in one profile with
+> secrets in another starts with no configuration and fails with a bare
+> "Connection closed". Check which profile you are in and point every command
+> at it:
+>
+> ```sh
+> hermes profile list          # or: echo "$HERMES_HOME"
+> export HERMES_HOME=/home/you/.hermes/profiles/<your-profile>
+> ```
 
 ```sh
-cat >> ~/.hermes/.env <<'EOF'
-FRIGATE_API_ROOT=https://frigate.example.internal/api
+cat >> "$HERMES_HOME/.env" <<'EOF'
+FRIGATE_API_ROOT=https://frigate.example.internal:8971/api
 FRIGATE_USERNAME=viewer
 FRIGATE_PASSWORD=your-viewer-password
 FRIGATE_CAMERAS=front,back
@@ -45,10 +57,56 @@ EOF
 `FRIGATE_API_ROOT` must be the **exact** API root, including `/api` and any
 reverse-proxy path prefix. The server never appends `/api` itself.
 
-`FRIGATE_CAMERAS` is optional but recommended: it restricts what the agent can
-see (see [Camera scope](#5-camera-scope)).
+Two details that are easy to get wrong:
 
-## 3. Register the server with Hermes
+- **Use the authenticated port over HTTPS.** Frigate's `8971` is the TLS
+  interface; plain HTTP to it is rejected with a 400.
+- **A self-signed certificate needs pinning** — see the next section.
+
+`FRIGATE_CAMERAS` is optional but recommended: it restricts what the agent can
+see (see [Camera scope](#6-camera-scope)).
+
+## 3. Self-signed certificates
+
+Frigate's built-in certificate is self-signed with a wildcard common name
+(`CN = *`) and **no subject alternative name**. Two consequences:
+
+- Trusting it as a certificate authority (`FRIGATE_CA_CERT_FILE`) is not
+  enough: a hostname check can never match `*`, so the connection fails with
+  `certificate_mismatch`.
+- The server therefore supports **pinning** the exact certificate with
+  `FRIGATE_TLS_PIN_CERT_FILE`. The pinned certificate becomes the only trusted
+  anchor for that connection and the hostname is not checked against it, so the
+  traffic stays encrypted and only the holder of that certificate can
+  impersonate the server.
+
+Export the certificate once:
+
+```sh
+mkdir -p ~/.config/frigate-mcp
+openssl s_client -connect frigate.example.internal:8971 -servername frigate.example.internal </dev/null 2>/dev/null \
+  | sed -n '/BEGIN CERT/,/END CERT/p' > ~/.config/frigate-mcp/frigate-cert.pem
+chmod 600 ~/.config/frigate-mcp/frigate-cert.pem
+```
+
+and add it to the profile's `.env`:
+
+```sh
+FRIGATE_TLS_PIN_CERT_FILE=/home/you/.config/frigate-mcp/frigate-cert.pem
+```
+
+If the certificate is issued by a real CA, use `FRIGATE_CA_CERT_FILE` (or
+`NODE_EXTRA_CA_CERTS`) instead and skip pinning. TLS verification is never
+disabled: `NODE_TLS_REJECT_UNAUTHORIZED=0` is not a supported configuration.
+
+The server reports TLS problems precisely, so a failure names its remedy:
+
+| Error code | Meaning |
+| --- | --- |
+| `untrusted_certificate` | The certificate is not signed by a trusted authority — set `FRIGATE_CA_CERT_FILE` |
+| `certificate_mismatch` | The certificate does not match this host — set `FRIGATE_TLS_PIN_CERT_FILE` |
+
+## 4. Register the server with Hermes
 
 `--args` uses `argparse.REMAINDER`, so it **must be the last option**:
 
@@ -58,6 +116,7 @@ hermes mcp add frigate \
         FRIGATE_USERNAME='${FRIGATE_USERNAME}' \
         FRIGATE_PASSWORD='${FRIGATE_PASSWORD}' \
         FRIGATE_CAMERAS='${FRIGATE_CAMERAS}' \
+        FRIGATE_TLS_PIN_CERT_FILE='${FRIGATE_TLS_PIN_CERT_FILE}' \
   --command node \
   --args /absolute/path/to/frigate-mcp/dist/cli.js
 ```
@@ -65,18 +124,32 @@ hermes mcp add frigate \
 Hermes performs a discovery probe while adding: it starts the server, lists the
 tools, and asks whether to enable them all. Accept, or pick a subset.
 
+> **If the probe fails**, Hermes still saves the entry — but **disabled**. Fix
+> the cause (usually the `.env` in the wrong profile, the wrong API root, or an
+> untrusted certificate), then enable it:
+>
+> ```sh
+> hermes mcp test frigate      # re-run the probe
+> hermes mcp configure frigate  # toggle the server and its tools
+> ```
+
+A failed probe usually prints `Connection closed`: the server process exited
+before the handshake. The usual causes are a missing `FRIGATE_API_ROOT` (the
+server refuses to start without it), an unreachable API root, or a certificate
+that is not trusted.
+
 Verify:
 
 ```sh
-hermes mcp test frigate     # connect and list the tools
-hermes mcp list             # the configured servers
+hermes mcp test frigate      # connect and list the tools
+hermes mcp list              # the configured servers
 hermes mcp configure frigate # toggle individual tools later
 ```
 
 The next Hermes session picks the server up (MCP discovery runs at startup). If
 a gateway or desktop app is already running, restart it.
 
-## 4. Remote option — Streamable HTTP
+## 5. Remote option — Streamable HTTP
 
 Use this when Hermes does not run on the Frigate host, or when several agents
 should share one server.
@@ -85,9 +158,10 @@ On the Frigate host:
 
 ```sh
 export FRIGATE_MCP_TRANSPORT=http
-export FRIGATE_API_ROOT=https://frigate.example.internal/api
+export FRIGATE_API_ROOT=https://frigate.example.internal:8971/api
 export FRIGATE_USERNAME=viewer
 export FRIGATE_PASSWORD=your-viewer-password
+export FRIGATE_TLS_PIN_CERT_FILE=/home/you/.config/frigate-mcp/frigate-cert.pem
 export FRIGATE_MCP_HTTP_SECRET="$(openssl rand -base64 48)"
 export FRIGATE_MCP_HTTP_HOST=127.0.0.1     # loopback by default
 export FRIGATE_MCP_HTTP_PORT=8080
@@ -101,9 +175,14 @@ hermes mcp add frigate --url https://mcp.example.internal/mcp --auth header
 ```
 
 Hermes asks whether the server requires authentication and then prompts for the
-bearer token (input is masked). It stores the token in `~/.hermes/.env` as
+bearer token (input is masked). It stores the token in the profile's `.env` as
 `MCP_FRIGATE_API_KEY` and writes the header template
 `Authorization: Bearer ${MCP_FRIGATE_API_KEY}` into `config.yaml`.
+
+**The MCP endpoint is not Frigate.** Frigate never speaks MCP: pointing Hermes
+at the Frigate port gives Frigate's own HTTP answers (a 404 or 405 for
+`POST /mcp`), not an MCP session. The MCP endpoint is this server, on its own
+port.
 
 ### HTTP transport settings
 
@@ -119,7 +198,7 @@ bearer token (input is masked). It stores the token in `~/.hermes/.env` as
 | `FRIGATE_MCP_HTTP_MAX_SESSIONS` | `16` | Concurrent sessions |
 | `FRIGATE_MCP_HTTP_ALLOW_NON_LOOPBACK` | — | Required to bind a non-loopback address |
 
-## 5. Camera scope
+## 6. Camera scope
 
 `FRIGATE_CAMERAS` restricts the server, not the model:
 
@@ -134,7 +213,7 @@ Without `FRIGATE_CAMERAS`, the server returns whatever the Frigate account may
 read. Only deploy it with an account whose permissions match the data you
 intend to expose.
 
-## 6. What Hermes gets
+## 7. What Hermes gets
 
 Fourteen read-only tools, registered as `mcp__frigate__<tool>`:
 
@@ -163,16 +242,17 @@ exist on the agent host. Artifacts expire (`FRIGATE_ARTIFACT_TTL_SECONDS`,
 default 1 hour) and are bounded by `FRIGATE_ARTIFACT_QUOTA_BYTES` (default
 1 GiB).
 
-## 7. Configuration reference
+## 8. Configuration reference
 
 | Variable | Default / meaning |
 | --- | --- |
 | `FRIGATE_API_ROOT` | Required absolute HTTP(S) API root, without URL credentials, query, or fragment |
-| `FRIGATE_USERNAME` / `FRIGATE_PASSWORD` | Managed Frigate login (uses `POST /login`) |
+| `FRIGATE_USERNAME` / `FRIGATE_PASSWORD` | Managed Frigate login (uses `POST /login` with `user` and `password`) |
 | `FRIGATE_BEARER_TOKEN` | Alternative: an externally supplied bearer JWT, forwarded verbatim and never refreshed |
 | `FRIGATE_AUTH_COOKIE_NAME` | `frigate_token`, Frigate's `auth.cookie_name` |
 | `FRIGATE_CAMERAS` | Comma-separated camera allowlist |
 | `FRIGATE_CA_CERT_FILE` | PEM file with a private CA to trust (HTTPS only); TLS verification stays on |
+| `FRIGATE_TLS_PIN_CERT_FILE` | PEM file with one exact certificate to pin (HTTPS only); required for a self-signed `CN = *` certificate |
 | `FRIGATE_ALLOW_INSECURE_HTTP` | `true` only for a trusted HTTP network |
 | `FRIGATE_TRUSTED_UNAUTHENTICATED` | Required to run without credentials against port 5000 |
 | `FRIGATE_TIMEOUT_MS` | `15000` — one deadline for all components of a read |
@@ -189,11 +269,16 @@ default 1 hour) and are bounded by `FRIGATE_ARTIFACT_QUOTA_BYTES` (default
 | `FRIGATE_CLIP_MAX_DURATION_SECONDS` | `120` — maximum clip duration |
 | `FRIGATE_CLIP_MAX_BYTES` | `52428800` — maximum clip size |
 
-## 8. Security notes
+## 9. Security notes
 
 - **Credentials never enter the sandbox.** They stay in the server process and
-  in Hermes' secret store; they are never tool arguments, prompt content, or
+  in the profile's `.env`; they are never tool arguments, prompt content, or
   log lines.
+- **Use a dedicated viewer account.** The Frigate `admin` account bypasses the
+  role checks the camera scope depends on.
+- **Rotate a credential that ever appeared in a log, a transcript, or a bug
+  report.** Once a secret is printed, treat it as exposed and replace it in
+  the Frigate UI and in the profile's `.env`.
 - **The MCP bearer secret is separate from the Frigate credential.** In HTTP
   mode every request — tool calls, session operations, and resource reads —
   must carry it, and it is compared in constant time.
@@ -210,25 +295,31 @@ default 1 hour) and are bounded by `FRIGATE_ARTIFACT_QUOTA_BYTES` (default
   Hermes' own storage policy and may contain surveillance observations;
   protect and expire it on that schedule.
 
-## 9. Troubleshooting
+## 10. Troubleshooting
 
 | Symptom | Check |
 | --- | --- |
-| `hermes mcp add` cannot connect | `FRIGATE_API_ROOT` reachable from this host; the binary built (`npm run build`); `node` on `PATH` |
-| Tools answer with an authentication error | The Frigate account is wrong, or `FRIGATE_PASSWORD` did not resolve from `~/.hermes/.env` |
+| `hermes mcp add` cannot connect, probe says `Connection closed` | The `.env` is in a **different profile** than the config; `FRIGATE_API_ROOT` is reachable; the binary is built (`npm run build`); `node` is on `PATH` |
+| The server was saved **disabled** | The probe failed — fix the cause, then `hermes mcp configure frigate` to enable it |
+| Every tool answers `untrusted_certificate` | The certificate is self-signed: export it and set `FRIGATE_TLS_PIN_CERT_FILE` |
+| Every tool answers `certificate_mismatch` | The certificate is trusted but does not match the host: pin it with `FRIGATE_TLS_PIN_CERT_FILE` |
+| Frigate itself answers 400 or 404 | The API root points at port 5000 or plain HTTP; use `https://<host>:8971/api` |
+| Hermes answers 404/405 on `POST /mcp` | Hermes is pointed at Frigate's port instead of this server's MCP endpoint |
+| Tools answer with an authentication error | The Frigate account is wrong, or `FRIGATE_PASSWORD` did not resolve from the profile's `.env` |
 | A camera is missing | It is outside `FRIGATE_CAMERAS`, or the Frigate account cannot read it |
 | `feature_disabled` from `search_events` | Semantic search is off on that instance; fall back to `list_events` with ordinary filters |
 | `not_found` for a clip or image | The evidence expired or was never recorded; a gap in footage is not proof that nothing happened |
 | An artifact URI fails to read | It expired, or it was outside the camera scope |
 
-## 10. Optional: check a real instance
+## 11. Optional: check a real instance
 
 The default test suite never touches a real NVR. An opt-in, read-only live
 check is available:
 
 ```sh
-FRIGATE_LIVE_API_ROOT=https://frigate.example.internal/api \
+FRIGATE_LIVE_API_ROOT=https://frigate.example.internal:8971/api \
 FRIGATE_USERNAME=viewer FRIGATE_PASSWORD=your-viewer-password \
+FRIGATE_TLS_PIN_CERT_FILE=/home/you/.config/frigate-mcp/frigate-cert.pem \
 npm run test:live
 ```
 
@@ -237,9 +328,9 @@ unless `FRIGATE_LIVE_API_ROOT` is set.
 
 ## Compatibility
 
-The contract was verified against **Frigate v0.18.2** tagged source. Other
-releases are reported explicitly as `unknown` or `unsupported` instead of being
-claimed as supported, and no live NVR has been certified by this project.
+The contract was verified against **Frigate v0.18.2** tagged source, and
+confirmed against a live `0.18.2` instance. Other releases are reported
+explicitly as `unknown` or `unsupported` instead of being claimed as supported.
 
 See the main [README.md](README.md) for the full tool contracts, the
 compatibility baseline, the durable bridge, and the restart/replay behaviour.

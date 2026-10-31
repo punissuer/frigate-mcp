@@ -4,7 +4,15 @@ import { request as httpRequest, type IncomingHttpHeaders } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { pipeline } from 'node:stream/promises';
 
-export type TransportFailureKind = 'timeout' | 'cancelled' | 'unreachable' | 'payload_too_large';
+export type TransportFailureKind =
+  | 'timeout'
+  | 'cancelled'
+  | 'unreachable'
+  | 'payload_too_large'
+  /** The server certificate is not signed by a trusted authority. */
+  | 'certificate_trust'
+  /** The server certificate does not match the host we asked for. */
+  | 'certificate_hostname';
 
 /** Transport-level failure. Never carries upstream bodies, URLs with credentials, or headers. */
 export class TransportError extends Error {
@@ -20,6 +28,12 @@ export interface HttpRequest {
   maxBytes: number;
   /** Operator-supplied CA bundle for a private TLS deployment. */
   ca?: Buffer;
+  /**
+   * Pin one exact server certificate. That certificate becomes the only trusted
+   * anchor and the hostname is not verified against it, which is what a
+   * self-signed certificate with a wildcard common name requires.
+   */
+  pinCertificate?: Buffer;
 }
 
 export interface HttpResponse {
@@ -46,6 +60,45 @@ export interface StreamRequest {
   maxBytes: number;
   destination: string;
   ca?: Buffer;
+  pinCertificate?: Buffer;
+}
+
+/** Classify a TLS failure so the operator gets an actionable answer. */
+export function tlsFailureKind(error: unknown): 'certificate_trust' | 'certificate_hostname' | undefined {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  switch (code) {
+    case 'ERR_TLS_CERT_ALTNAME_INVALID':
+      return 'certificate_hostname';
+    case 'DEPTH_ZERO_SELF_SIGNED_CERT':
+    case 'SELF_SIGNED_CERT_IN_CHAIN':
+    case 'UNABLE_TO_VERIFY_LEAF_SIGNATURE':
+    case 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY':
+    case 'UNABLE_TO_GET_ISSUER_CERT':
+    case 'CERT_SIGNATURE_FAILURE':
+    case 'ERR_TLS_CERT_SIGNATURE_FAILURE':
+    case 'CERT_HAS_EXPIRED':
+    case 'ERR_TLS_CERT_EXPIRED':
+      return 'certificate_trust';
+    default:
+      return undefined;
+  }
+}
+
+/** The TLS options for one request: trust store, optional pin, hostname check. */
+function tlsOptions(url: URL, options: { ca?: Buffer; pinCertificate?: Buffer }) {
+  const pinned = Boolean(options.pinCertificate);
+  return {
+    ...(options.pinCertificate ? { ca: options.pinCertificate } : options.ca ? { ca: options.ca } : {}),
+    // A wildcard common name cannot match a host, so a pinned certificate is
+    // trusted as-is and the hostname check is skipped for it.
+    ...(pinned ? { checkServerIdentity: () => undefined } : {}),
+    ...(isIpAddress(url.hostname) ? {} : { servername: url.hostname }),
+    rejectUnauthorized: true,
+  };
+}
+
+function isIpAddress(hostname: string): boolean {
+  return /^\d{1,3}(\.\d{1,3}){3}$/.test(hostname) || hostname.includes(':');
 }
 
 /**
@@ -70,7 +123,7 @@ export async function streamToFile(options: StreamRequest): Promise<{ status: nu
       path: `${url.pathname}${url.search}`,
       method: 'GET',
       headers: options.headers ?? {},
-      ...(secure ? { ca: options.ca, servername: url.hostname, rejectUnauthorized: true } : {}),
+      ...(secure ? tlsOptions(url, options) : {}),
     }, res => {
       const status = res.statusCode ?? 0;
       const declared = Number(res.headers['content-length'] ?? '0');
@@ -98,9 +151,16 @@ export async function streamToFile(options: StreamRequest): Promise<{ status: nu
         fail(new TransportError(signal.aborted ? 'cancelled' : 'unreachable', 'Upstream media download failed'));
       });
     });
-    req.on('error', () => {
+    req.on('error', (error: unknown) => {
       if (signal.aborted) {
         fail(new TransportError(signal.reason?.name === 'TimeoutError' ? 'timeout' : 'cancelled', 'Upstream request cancelled'));
+        return;
+      }
+      const tls = tlsFailureKind(error);
+      if (tls) {
+        fail(new TransportError(tls, tls === 'certificate_hostname'
+          ? 'The Frigate certificate does not match this host'
+          : 'The Frigate certificate is not trusted'));
         return;
       }
       fail(new TransportError('unreachable', 'Unable to reach Frigate'));
@@ -139,7 +199,7 @@ export async function performRequest(options: HttpRequest): Promise<HttpResponse
       path: `${url.pathname}${url.search}`,
       method: options.method ?? 'GET',
       headers: options.headers ?? {},
-      ...(secure ? { ca: options.ca, servername: url.hostname, rejectUnauthorized: true } : {}),
+      ...(secure ? tlsOptions(url, options) : {}),
     };
     const req = request(requestOptions, res => {
       const status = res.statusCode ?? 0;
@@ -163,9 +223,16 @@ export async function performRequest(options: HttpRequest): Promise<HttpResponse
       res.on('end', () => finish(() => resolve({ status, headers: res.headers, body: Buffer.concat(chunks) })));
       res.on('error', () => fail(new TransportError(signal.aborted ? 'cancelled' : 'unreachable', 'Upstream response failed')));
     });
-    req.on('error', () => {
+    req.on('error', (error: unknown) => {
       if (signal.aborted) {
         fail(new TransportError(signal.reason?.name === 'TimeoutError' ? 'timeout' : 'cancelled', 'Upstream request cancelled'));
+        return;
+      }
+      const tls = tlsFailureKind(error);
+      if (tls) {
+        fail(new TransportError(tls, tls === 'certificate_hostname'
+          ? 'The Frigate certificate does not match this host'
+          : 'The Frigate certificate is not trusted'));
         return;
       }
       fail(new TransportError('unreachable', 'Unable to reach Frigate'));

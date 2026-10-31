@@ -4,7 +4,7 @@
 
 The user approved the spec, test boundary, and nine-ticket implementation breakdown. All nine tickets were published to [punissuer/frigate-mcp](https://github.com/punissuer/frigate-mcp/issues) with `ready-for-agent` labels and native GitHub blocking relationships.
 
-**Issues #1 through #9 are implemented, committed, and pushed to `main`.** The working tree is clean. The read-only v1 surface is complete: fourteen read-only tools over stdio and Streamable HTTP, with durable restart/replay acceptance.
+**Issues #1 through #9 are implemented, committed, and pushed to `main`.** A follow-up release (1.1.0) added self-signed certificate support and the Hermes installation guide after a live deployment attempt exposed two gaps: a self-signed `CN = *` certificate cannot pass a hostname check, and TLS failures were reported as a generic "unable to reach Frigate". The working tree is clean. The read-only v1 surface is complete: fourteen read-only tools over stdio and Streamable HTTP, with durable restart/replay acceptance.
 
 The user reported: “afaict it works.” This is positive feedback, not a recorded live-Frigate test result. No live NVR or provider credentials were used by the assistant.
 
@@ -123,6 +123,7 @@ The server rejects unsafe configuration, sanitizes startup and upstream errors, 
 | `test/media.test.ts` | Image retrieval, offline fallback, scope, size cap, cancellation, and forwarding boundary tests |
 | `test/clips.test.ts` | Artifact publication, resource retrieval, quota, TTL, cleanup, and cancellation boundary tests |
 | `test/recovery.test.ts` | Crash and resume acceptance, expired artifact references, and manifest-change refusal |
+| `test/tls.test.ts` | Self-signed certificate trust, pinning, and the login-then-authenticated-read flow |
 | `test/http.test.ts` | Remote transport authentication, Origin validation, session and request bounds, and the shared code-mode suite over HTTP |
 | `test/live.test.ts` | Opt-in, non-destructive live compatibility check (skipped without an API root) |
 | `examples/investigation.ts` | Discovery, bounded cross-camera reads, and image forwarding |

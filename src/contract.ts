@@ -124,7 +124,7 @@ export const statisticsSchema = z.object({
 });
 export type Statistics = z.infer<typeof statisticsSchema>;
 export const errorSchema = z.strictObject({
-  code: z.enum(['authentication', 'forbidden', 'not_found', 'rate_limit', 'upstream_error', 'timeout', 'cancelled', 'unreachable', 'malformed_response', 'payload_too_large', 'redirect_rejected', 'busy', 'invalid_request', 'feature_disabled', 'feature_unsupported', 'media_unavailable', 'quota_exceeded']),
+  code: z.enum(['authentication', 'forbidden', 'not_found', 'rate_limit', 'upstream_error', 'timeout', 'cancelled', 'unreachable', 'malformed_response', 'payload_too_large', 'redirect_rejected', 'busy', 'invalid_request', 'feature_disabled', 'feature_unsupported', 'media_unavailable', 'quota_exceeded', 'untrusted_certificate', 'certificate_mismatch']),
   message: z.string().max(160),
   retryable: z.boolean(),
   status: z.number().int().min(100).max(599).optional(),

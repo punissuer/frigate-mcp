@@ -300,7 +300,9 @@ test('a custom CA is required to reach a private TLS deployment', async t => {
 const result = await tools.mcp__frigate__list_cameras({});
 text(result);
 `, { env: { FRIGATE_USERNAME: 'viewer', FRIGATE_PASSWORD: PASSWORD } });
-    assert.match(text(untrusted.result), /"code":"unreachable"/);
+    // An untrusted certificate is reported as such, with the remedy.
+    assert.match(text(untrusted.result), /"code":"untrusted_certificate"/);
+    assert.match(text(untrusted.result), /FRIGATE_CA_CERT_FILE/);
 
     const trusted = await runScript(fixture.apiRoot, `
 const result = await tools.mcp__frigate__list_cameras({});

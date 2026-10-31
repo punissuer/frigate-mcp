@@ -1,4 +1,5 @@
 import { loadCaCertificate } from './http.js';
+import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -16,6 +17,12 @@ export interface FrigateOptions {
   cameras?: string[] | undefined;
   /** PEM file with a private CA to trust in addition to the system store. */
   caCertFile?: string | undefined;
+  /**
+   * PEM file with one exact server certificate to pin. A pinned certificate is
+   * the only trusted anchor and the hostname is not verified against it, which
+   * a self-signed certificate with a wildcard common name requires.
+   */
+  tlsPinCertFile?: string | undefined;
   /** Explicitly permit HTTP on a trusted private network (including the fixture). */
   allowInsecureHttp?: boolean | undefined;
   /** Explicitly permit running without credentials against a trusted network. */
@@ -79,6 +86,8 @@ export function validateOptions(options: FrigateOptions) {
   }
   const ca = options.caCertFile === undefined ? undefined : loadCaCertificate(options.caCertFile);
   if (ca && url.protocol !== 'https:') throw new Error('FRIGATE_CA_CERT_FILE requires an HTTPS API root');
+  const pin = options.tlsPinCertFile === undefined ? undefined : loadPinnedCertificate(options.tlsPinCertFile);
+  if (pin && url.protocol !== 'https:') throw new Error('FRIGATE_TLS_PIN_CERT_FILE requires an HTTPS API root');
   const hasCredentials = Boolean(options.bearerToken) || Boolean(options.username);
   // Port 5000 is Frigate's internal interface and bypasses role enforcement.
   if (!hasCredentials && url.port === '5000' && !options.allowUnauthenticated) {
@@ -115,6 +124,7 @@ export function validateOptions(options: FrigateOptions) {
     ...limits,
     root: url,
     ca,
+    pin,
     artifactDir: options.artifactDir ?? join(tmpdir(), 'frigate-mcp-artifacts'),
     cameras,
     cameraScopeRestricted: cameras.length > 0,
@@ -123,6 +133,17 @@ export function validateOptions(options: FrigateOptions) {
     password: options.password,
     cookieName,
   };
+}
+
+/** Read a PEM file holding one certificate to pin. */
+function loadPinnedCertificate(path: string): Buffer {
+  let pem: Buffer;
+  try { pem = readFileSync(path); }
+  catch { throw new Error('FRIGATE_TLS_PIN_CERT_FILE must be a readable PEM certificate file'); }
+  if (!/-----BEGIN CERTIFICATE-----/.test(pem.toString('utf8'))) {
+    throw new Error('FRIGATE_TLS_PIN_CERT_FILE must contain a PEM certificate');
+  }
+  return pem;
 }
 
 export function optionsFromEnv(env: NodeJS.ProcessEnv): FrigateOptions {
@@ -137,6 +158,7 @@ export function optionsFromEnv(env: NodeJS.ProcessEnv): FrigateOptions {
   if (env.FRIGATE_PASSWORD !== undefined) options.password = env.FRIGATE_PASSWORD;
   if (env.FRIGATE_AUTH_COOKIE_NAME !== undefined) options.authCookieName = env.FRIGATE_AUTH_COOKIE_NAME;
   if (env.FRIGATE_CA_CERT_FILE !== undefined) options.caCertFile = env.FRIGATE_CA_CERT_FILE;
+  if (env.FRIGATE_TLS_PIN_CERT_FILE !== undefined) options.tlsPinCertFile = env.FRIGATE_TLS_PIN_CERT_FILE;
   if (env.FRIGATE_ARTIFACT_DIR !== undefined) options.artifactDir = env.FRIGATE_ARTIFACT_DIR;
   if (env.FRIGATE_CAMERAS !== undefined) {
     options.cameras = env.FRIGATE_CAMERAS.split(',').map(value => value.trim()).filter(Boolean);

@@ -110,6 +110,7 @@ Environment substitution in this JSON is client-specific. It is **not** a config
 | `FRIGATE_AUTH_COOKIE_NAME` | `frigate_token`, Frigate's `auth.cookie_name`; the cookie the managed session reads |
 | `FRIGATE_CAMERAS` | Optional comma-separated camera allowlist; discovery and statistics are restricted to it |
 | `FRIGATE_CA_CERT_FILE` | Optional PEM file with a private CA to trust in addition to the system store (HTTPS only) |
+| `FRIGATE_TLS_PIN_CERT_FILE` | Optional PEM file with one exact server certificate to pin (HTTPS only). The pinned certificate becomes the only trusted anchor and the hostname is not verified against it — required for Frigate's default self-signed certificate, whose common name is `*` |
 | `FRIGATE_TRUSTED_UNAUTHENTICATED` | `false`; required to run without credentials against port 5000 |
 | `FRIGATE_ALLOW_INSECURE_HTTP` | `false`; must explicitly be `true` for a trusted HTTP network or local fixture |
 | `FRIGATE_TIMEOUT_MS` | `15000`, one deadline for all components of a read; range 1–60000 |
@@ -127,6 +128,16 @@ Environment substitution in this JSON is client-specific. It is **not** a config
 | `FRIGATE_CLIP_MAX_BYTES` | `52428800`, maximum evidence clip size (50 MiB) |
 
 Prefer authenticated Frigate port **8971**, directly or through a trusted TLS reverse proxy, and a least-privilege viewer account. Port **5000 bypasses Frigate role enforcement**; use it only on a trusted private network, with explicit `FRIGATE_TRUSTED_UNAUTHENTICATED=true` and explicit HTTP opt-in if applicable. TLS verification stays enabled. `FRIGATE_CA_CERT_FILE` adds a private CA without disabling verification; Node's `NODE_EXTRA_CA_CERTS` also works at process startup. Never use `NODE_TLS_REJECT_UNAUTHORIZED=0`.
+
+**Self-signed certificates.** Frigate's built-in certificate is self-signed with a wildcard common name (`CN = *`) and no subject alternative name, so a hostname check can never succeed against it, and `FRIGATE_CA_CERT_FILE` alone still fails with `certificate_mismatch`. Export the certificate once and pin it:
+
+```sh
+openssl s_client -connect frigate.example.internal:8971 -servername frigate.example.internal </dev/null 2>/dev/null \
+  | sed -n '/BEGIN CERT/,/END CERT/p' > ~/.config/frigate-mcp/frigate-cert.pem
+export FRIGATE_TLS_PIN_CERT_FILE=~/.config/frigate-mcp/frigate-cert.pem
+```
+
+A pinned certificate is the only trusted anchor for that connection, so the traffic is still encrypted and only the holder of that exact certificate can impersonate the server. TLS failures are reported as `untrusted_certificate` or `certificate_mismatch` with the remedy in the message, instead of a generic "unable to reach Frigate".
 
 Never supply Frigate's JWT signing secret. The MCP server does not listen on an HTTP port yet.
 
