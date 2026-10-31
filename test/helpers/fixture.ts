@@ -36,6 +36,52 @@ export const configuration = {
 
 export type Override = (req: IncomingMessage, res: ServerResponse) => boolean;
 
+// Review segments modeled on Frigate v0.18.2's ReviewSegmentResponse. Review
+// times are ISO 8601 strings without a zone offset, as FastAPI serializes them.
+export const reviewItems = [
+  {
+    id: '1700000000.100000-review', camera: 'front', start_time: '2023-11-14T22:13:20.000000', end_time: '2023-11-14T22:13:30.000000',
+    has_been_reviewed: false, severity: 'alert', thumb_path: '/media/front/1700000000.100000.jpg',
+    data: { zones: ['porch'], detections: ['1700000000.100000'], objects: [{ id: '1700000000.100000', label: 'person' }] },
+  },
+  {
+    id: '1700000100.200000-review', camera: 'front', start_time: '2023-11-14T22:28:20.000000', end_time: '2023-11-14T22:28:25.000000',
+    has_been_reviewed: true, severity: 'detection', thumb_path: '/media/front/1700000100.200000.jpg',
+    data: { zones: ['driveway'], detections: ['1700000100.200000'], objects: [] },
+  },
+  {
+    id: '1700000200.300000-review', camera: 'back', start_time: '2023-11-14T21:43:20.000000', end_time: '2023-11-14T21:43:30.000000',
+    has_been_reviewed: false, severity: 'alert', thumb_path: '/media/back/1700000200.300000.jpg',
+    data: { zones: ['alley'], detections: ['1700000200.300000'], objects: [] },
+  },
+];
+
+// Recording intervals modeled on Frigate v0.18.2's /{camera}/recordings rows.
+export const recordingIntervals = {
+  front: [
+    { id: '1700000000', start_time: 1700000000, end_time: 1700000060, segment_size: 60, motion: 12, objects: 3, duration: 60 },
+    { id: '1700000120', start_time: 1700000120, end_time: 1700000180, segment_size: 60, motion: 4, objects: 1, duration: 60 },
+  ],
+  back: [
+    { id: '1700000000', start_time: 1700000000, end_time: 1700000030, segment_size: 60, motion: 1, objects: 0, duration: 30 },
+  ],
+};
+
+export const recordingSummaries = {
+  front: [
+    {
+      day: '2023-11-14', events: 2,
+      hours: [{ hour: '22', events: 2, motion: 16, objects: 4, duration: 120 }],
+    },
+  ],
+  back: [
+    {
+      day: '2023-11-14', events: 1,
+      hours: [{ hour: '22', events: 1, motion: 1, objects: 0, duration: 30 }],
+    },
+  ],
+};
+
 // Object events modeled on Frigate v0.18.2's EventResponse. Descriptions and
 // other free text are sentinel values that must never be returned.
 export const events = [
@@ -76,6 +122,9 @@ export interface FixtureOptions {
   allowedCameras?: string[];
   /** Model Frigate's semantic search service. */
   semanticSearch?: { enabled: boolean; matches?: Record<string, unknown>[] };
+  reviews?: Record<string, unknown>[];
+  recordings?: Record<string, Record<string, unknown>[]>;
+  recordingSummaries?: Record<string, Record<string, unknown>[]>;
   /** Serve HTTPS with an operator-supplied certificate. */
   tls?: { key: Buffer; cert: Buffer };
   /** Extra behavior layered on top of the modeled routes. */
@@ -128,6 +177,54 @@ export async function startFixture(options: FixtureOptions | Override = {}) {
       if (!authorized(req)) { unauthorized(res); return; }
       res.setHeader('content-type', 'application/json');
       res.end(JSON.stringify(settings.config ?? configuration));
+    } else if (path === '/nvr/api/review') {
+      if (!authorized(req)) { unauthorized(res); return; }
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify(selectReviews(req, settings)));
+    } else if (path.startsWith('/nvr/api/review/')) {
+      if (!authorized(req)) { unauthorized(res); return; }
+      const id = decodeURIComponent(path.slice('/nvr/api/review/'.length));
+      const allowed = settings.allowedCameras ?? (settings.reviews ?? reviewItems).map(review => String(review.camera));
+      const found = (settings.reviews ?? reviewItems).find(review => review.id === id);
+      if (!found) {
+        res.writeHead(404, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ success: false, message: 'Review item not found' }));
+        return;
+      }
+      if (!allowed.includes(String(found.camera))) {
+        res.writeHead(403, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ message: 'Access denied' }));
+        return;
+      }
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify(found));
+    } else if (/^\/nvr\/api\/[A-Za-z0-9_-]+\/recordings\/summary$/.test(path)) {
+      if (!authorized(req)) { unauthorized(res); return; }
+      const camera = path.split('/')[3]!;
+      const allowed = settings.allowedCameras ?? Object.keys(settings.recordings ?? recordingIntervals);
+      if (!allowed.includes(camera)) {
+        res.writeHead(403, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ message: 'Access denied' }));
+        return;
+      }
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify(((settings.recordingSummaries ?? recordingSummaries) as Record<string, Record<string, unknown>[]>)[camera] ?? []));
+    } else if (/^\/nvr\/api\/[A-Za-z0-9_-]+\/recordings$/.test(path)) {
+      if (!authorized(req)) { unauthorized(res); return; }
+      const camera = path.split('/')[3]!;
+      const allowed = settings.allowedCameras ?? Object.keys(settings.recordings ?? recordingIntervals);
+      if (!allowed.includes(camera)) {
+        res.writeHead(403, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ message: 'Access denied' }));
+        return;
+      }
+      const url = new URL(req.url ?? '/', 'http://fixture.invalid');
+      const after = url.searchParams.get('after') ? Number(url.searchParams.get('after')) : undefined;
+      const before = url.searchParams.get('before') ? Number(url.searchParams.get('before')) : undefined;
+      const intervals = (((settings.recordings ?? recordingIntervals) as Record<string, Record<string, unknown>[]>)[camera] ?? [])
+        .filter((record: Record<string, unknown>) => (after === undefined || Number(record.end_time) >= after) && (before === undefined || Number(record.start_time) <= before));
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify(intervals));
     } else if (path === '/nvr/api/events/search') {
       if (!authorized(req)) { unauthorized(res); return; }
       const search = settings.semanticSearch ?? { enabled: false };
@@ -215,6 +312,39 @@ function readBody(req: IncomingMessage): Promise<Buffer> {
     req.on('data', chunk => chunks.push(chunk as Buffer));
     req.on('end', () => resolve(Buffer.concat(chunks)));
   });
+}
+
+/** Model Frigate v0.18.2's /review filtering and ordering. */
+function selectReviews(req: IncomingMessage, settings: FixtureOptions): Record<string, unknown>[] {
+  const url = new URL(req.url ?? '/', 'http://fixture.invalid');
+  const query = url.searchParams;
+  const allowed = settings.allowedCameras ?? (settings.reviews ?? reviewItems).map(review => String(review.camera));
+  const cameras = query.get('cameras');
+  const labels = query.get('labels');
+  const zones = query.get('zones');
+  const severity = query.get('severity');
+  const reviewed = query.get('reviewed');
+  const after = query.get('after') ? Number(query.get('after')) : undefined;
+  const before = query.get('before') ? Number(query.get('before')) : undefined;
+  const limit = query.get('limit') ? Number(query.get('limit')) : undefined;
+  const selected = (settings.reviews ?? reviewItems).filter(review => {
+    if (!allowed.includes(String(review.camera))) return false;
+    if (cameras && cameras !== 'all' && !cameras.split(',').includes(String(review.camera))) return false;
+    if (severity && review.severity !== severity) return false;
+    if (reviewed === '1' && review.has_been_reviewed !== true) return false;
+    if (reviewed === '0' && review.has_been_reviewed === true) return false;
+    const start = Date.parse(String(review.start_time).replace(' ', 'T') + 'Z') / 1000;
+    if (after !== undefined && !(start > after)) return false;
+    if (before !== undefined && !(start < before)) return false;
+    const data = review.data as { zones?: string[]; detections?: unknown[] } | undefined;
+    if (labels && labels !== 'all' && !labels.split(',').some(label => (data?.detections ?? []).includes(label))) return false;
+    if (zones && zones !== 'all' && !zones.split(',').some(zone => (data?.zones ?? []).includes(zone))) return false;
+    return true;
+  });
+  const ordered = [...selected].sort((left, right) =>
+    String(left.severity).localeCompare(String(right.severity))
+    || Date.parse(String(right.start_time).replace(' ', 'T') + 'Z') - Date.parse(String(left.start_time).replace(' ', 'T') + 'Z'));
+  return limit ? ordered.slice(0, limit) : ordered;
 }
 
 /** Model Frigate v0.18.2's /events filtering, ordering, and offset paging. */

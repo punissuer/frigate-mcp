@@ -2,7 +2,7 @@
 
 Read-only Frigate MCP tools with an optional **pi-durable code-mode bridge**.
 
-Implemented: [issues #1](https://github.com/punissuer/frigate-mcp/issues/1)–[#4](https://github.com/punissuer/frigate-mcp/issues/4) — the stdio `get_system_status`, `list_cameras`, `get_capabilities`, `list_events`, `get_event`, and `search_events` vertical slices, with managed login, camera scope, bounded retries, paged event investigation, and semantic search. Media, restart acceptance tests, and remote Streamable HTTP are tracked in [issues #5–#9](https://github.com/punissuer/frigate-mcp/issues). **This is not the complete v1 server.**
+Implemented: [issues #1](https://github.com/punissuer/frigate-mcp/issues/1)–[#5](https://github.com/punissuer/frigate-mcp/issues/5) — the stdio `get_system_status`, `list_cameras`, `get_capabilities`, `list_events`, `get_event`, `search_events`, `list_review_items`, `get_review_item`, `get_recording_summary`, and `list_recordings` vertical slices, with managed login, camera scope, bounded retries, paged event investigation, semantic search, review segments, and recording availability. Media, restart acceptance tests, and remote Streamable HTTP are tracked in [issues #6–#9](https://github.com/punissuer/frigate-mcp/issues). **This is not the complete v1 server.**
 
 ## Develop and verify
 
@@ -138,6 +138,24 @@ The result states the observed capability: `supported` after a successful search
 
 Relevance is reported as the upstream `searchDistance` and `searchSource`. A distance is not a confidence score and is not presented as one. The search is read-only: it never regenerates descriptions or embeddings, manages models, invokes Frigate Chat, or starts background work.
 
+### `list_review_items({ after, before, ... })`
+
+Lists review segments (`GET /review`) in a bounded UTC Unix-second interval, with camera, label, zone, `severity` (`alert` or `detection`), and `reviewed` filters. A review segment **groups detections**; it is not one detected object, and the result never equates the two.
+
+The upstream review list has no paging beyond its limit, so no cursor is invented. A filled limit is reported as `complete: false` with a warning that more items may exist. Review items are never marked viewed, and nothing is deleted or modified.
+
+### `get_review_item({ reviewId })`
+
+Reads one review segment (`GET /review/{review_id}`) with its severity, reviewed state, times, and permitted event references. Identifiers are validated and encoded, path traversal is rejected, and a review outside the camera scope is rejected without leaking its references.
+
+### `get_recording_summary({ camera })`
+
+Reports the upstream recording summary for one camera: the days and hours that have recordings, with per-hour event, motion, object, and duration counts. The upstream summary covers **every recorded day** for that camera and cannot be scoped to a window, so a window argument is rejected instead of being ignored. The admin-only recordings/storage endpoint is never used.
+
+### `list_recordings({ camera, after, before })`
+
+Lists the recording intervals of one camera inside a required, bounded UTC Unix-second range, and reports the **gaps** between them, clipped to the requested range. A gap is missing footage, not evidence that nothing happened.
+
 Small structured results are mirrored as JSON text in `content` for ordinary clients. Output schemas bound camera/detector entries and identifier lengths; oversized or malformed upstream data fails rather than being silently truncated. Redirects are rejected, and upstream error bodies are never echoed. All components of a read share one deadline; reads are sequential, avoiding a fan-out beyond the configured concurrency bound.
 
 Transient failures (network errors, 408, 429, 5xx) are retried at most twice within the deadline, with jitter and bounded `Retry-After` handling. Authorization, not-found, and validation failures are never retried.
@@ -149,6 +167,8 @@ The fixture contract was checked against **Frigate v0.18.2** tagged source:
 - [HTTP handlers: plain-text health/version and authenticated statistics](https://github.com/blakeblackshear/frigate/blob/v0.18.2/frigate/api/app.py)
 - [Authentication: `/login`, the `frigate_token` cookie, and role checks](https://github.com/blakeblackshear/frigate/blob/v0.18.2/frigate/api/auth.py)
 - [Events: `/events` filters, ordering, and offset paging](https://github.com/blakeblackshear/frigate/blob/v0.18.2/frigate/api/event.py)
+- [Reviews: `/review` filters, severity, and review state](https://github.com/blakeblackshear/frigate/blob/v0.18.2/frigate/api/review.py)
+- [Recordings: `/\{camera\}/recordings` and the daily/hourly summary](https://github.com/blakeblackshear/frigate/blob/v0.18.2/frigate/api/record.py)
 - [Statistics shape](https://github.com/blakeblackshear/frigate/blob/v0.18.2/frigate/stats/util.py)
 
 `0.18.2` and its hexadecimal commit-suffixed builds are classified `supported` **for the status and discovery contracts only**. Older pre-0.18 releases are classified `unsupported`; other versions/build formats are `unknown`. Probes may still succeed on untested versions, but the result explicitly warns about compatibility. This is source/fixture contract testing, **not live-NVR certification**, and does not establish support for future tools.
@@ -184,7 +204,7 @@ registry.install(createCodemodeExtension({
 // On shutdown: close the harness first, then sandbox.close(), then bridge.close().
 ```
 
-The bridge initializes MCP, validates the exact known read-only manifest, and registers `mcp__frigate__get_system_status`, `mcp__frigate__list_cameras`, `mcp__frigate__get_capabilities`, `mcp__frigate__list_events`, `mcp__frigate__get_event`, and `mcp__frigate__search_events` as replay-safe nested tools. Connect again on host restart; never persist the live client, credentials, or transport. Tool-contract upgrades require a compatible bridge; an unknown manifest fails closed.
+The bridge initializes MCP, validates the exact known read-only manifest, and registers `mcp__frigate__get_system_status`, `mcp__frigate__list_cameras`, `mcp__frigate__get_capabilities`, `mcp__frigate__list_events`, `mcp__frigate__get_event`, `mcp__frigate__search_events`, `mcp__frigate__list_review_items`, `mcp__frigate__get_review_item`, `mcp__frigate__get_recording_summary`, and `mcp__frigate__list_recordings` as replay-safe nested tools. Connect again on host restart; never persist the live client, credentials, or transport. Tool-contract upgrades require a compatible bridge; an unknown manifest fails closed.
 
 A code-mode investigation can use:
 

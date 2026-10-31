@@ -4,7 +4,7 @@
 
 The user approved the spec, test boundary, and nine-ticket implementation breakdown. All nine tickets were published to [punissuer/frigate-mcp](https://github.com/punissuer/frigate-mcp/issues) with `ready-for-agent` labels and native GitHub blocking relationships.
 
-**Issues #1, #2, #3, and #4 are implemented, committed, and pushed to `main`.** The working tree is clean. The next agreed step is **[#5: Reviews and recording availability](https://github.com/punissuer/frigate-mcp/issues/5)**, which has not been started.
+**Issues #1, #2, #3, #4, and #5 are implemented, committed, and pushed to `main`.** The working tree is clean. The next agreed step is **[#6: Frames and event images](https://github.com/punissuer/frigate-mcp/issues/6)**, which has not been started.
 
 The user reported: “afaict it works.” This is positive feedback, not a recorded live-Frigate test result. No live NVR or provider credentials were used by the assistant.
 
@@ -12,7 +12,7 @@ The user reported: “afaict it works.” This is positive feedback, not a recor
 
 1. `README.md`: current usage, configuration, authentication, camera scope, limitations, compatibility, and durable integration.
 2. `docs/spec.md`: approved overall design and dependency graph.
-3. GitHub issue #5: its full acceptance criteria before implementing the next slice.
+3. GitHub issue #6: its full acceptance criteria before implementing the next slice.
 4. `src/contract.ts`, `src/frigate.ts`, `src/auth.ts`, `src/http.ts`, and `src/durable.ts`: the existing public contracts and integration boundary.
 
 ## What issues #1 and #2 deliver
@@ -29,7 +29,7 @@ Predetermined faux-provider tool call (no external LLM)
   → controlled Frigate HTTP fixture
 ```
 
-Six read-only tools are exposed:
+Ten read-only tools are exposed:
 
 - `get_system_status({})` reads `/`, `/version`, and `/stats` beneath an explicitly configured API root, and returns independent health/version/statistics outcomes, an `authorizedApiAccess` value confirmed only by a successful valid protected statistics read, allowlisted camera/detector fields, and a bounded, schema-validated success/error envelope mirrored as JSON text.
 - `list_cameras({ camera? })` reads only allowlisted fields of `GET /config` and returns permitted camera identifiers, zone names, and detection state. It never returns raw configuration, RTSP URLs, provider keys, or paths.
@@ -48,6 +48,13 @@ Camera scope (issue #2):
 - `FRIGATE_CAMERAS` restricts discovery and the existing status statistics. Cameras outside the scope are dropped from statistics and rejected when requested explicitly. Unscopable global aggregates (detector inference speed) are omitted rather than leaking a wider scope.
 
 - `search_events({ query, after, before, ... })` searches object events over `GET /events/search` with the same scope, time-unit, byte-limit, deadline, and completeness rules as `list_events`. It reports the observed capability state (`supported`, `disabled`, `unsupported`, `unknown`), never triggers a search during capability discovery, rejects unsupported search modes, and reports relevance as the upstream distance rather than an invented confidence. It is read-only: it never regenerates descriptions or embeddings, manages models, invokes Frigate Chat, or starts background work.
+
+- `list_review_items({ after, before, ... })` lists review segments over `GET /review` with camera, label, zone, severity, and reviewed-state filters. A review segment groups detections and is never equated with one detected object. The upstream review list has no paging beyond its limit, so completeness is reported explicitly and no cursor is invented.
+- `get_review_item({ reviewId })` reads one review segment over `GET /review/{review_id}` with its severity, reviewed state, times, and permitted event references. Out-of-scope reviews are rejected without leaking references.
+- `get_recording_summary({ camera })` reports the upstream daily/hourly recording summary for one camera and states that the upstream scope covers every recorded day; an unscopable window argument is rejected rather than ignored, and the admin-only storage endpoint is never used.
+- `list_recordings({ camera, after, before })` lists a camera's recording intervals in a required bounded range and reports the gaps between them, clipped to the range. A gap is missing footage, not evidence that nothing happened.
+
+Nothing is ever marked viewed, deleted, or modified: every upstream call in this slice is a read.
 
 Event policy (issue #3):
 
@@ -80,6 +87,7 @@ The server rejects unsafe configuration, sanitizes startup and upstream errors, 
 | `test/discovery.test.ts` | Authentication, session refresh, camera scope, retries, TLS/CA, redaction boundary tests |
 | `test/events.test.ts` | Event filtering, paging, completeness, scope, units, and identifier boundary tests |
 | `test/search.test.ts` | Semantic search capability states, fallback, scope, and truncation boundary tests |
+| `test/reviews.test.ts` | Review segment, recording interval, gap, and no-mutation boundary tests |
 | `examples/smoke.ts` | Reproducible offline end-to-end demonstration |
 | `.github/workflows/ci.yml` | Node 24 install, typecheck, tests, smoke, packaging, production audit |
 | `package.json`, `package-lock.json` | Pinned dependencies, optional durable peers, separate exports, build/test commands |
@@ -104,7 +112,7 @@ git diff --check
 
 Results:
 
-- **60 tests passed** (22 from issue #1, 14 from issue #2, 15 from issue #3, 9 from issue #4).
+- **71 tests passed** (22 from issue #1, 14 from issue #2, 15 from issue #3, 9 from issue #4, 11 from issue #5).
 - Typecheck/build/smoke passed.
 - Audit reported **zero vulnerabilities**.
 - Package dry-run passed.
@@ -118,6 +126,8 @@ Issue #3 tests additionally cover event filtering and translated query parameter
 
 Issue #4 tests additionally cover a successful semantic search with distance and source, a disabled service with an explicit fallback to `list_events`, a missing endpoint reported as unsupported, camera scope on search filters and results, an empty search, malformed upstream search data, a retried transient search failure, truncated search results, and rejected units, windows, and empty queries.
 
+Issue #5 tests additionally cover an unreviewed alert selection with its details, recording summary, and gaps; forbidden direct identifiers and camera scopes; missing review items; identical review timestamps; the review limit without invented paging; invalid review and recording ranges; an unsupported summary window; role denial; malformed and oversized review responses; and an explicit assertion that no mutating request was made.
+
 These are fixture-driven checks, not live deployment certification. Full crash/reopen durability acceptance is reserved for #8.
 
 ## Runtime and release baseline
@@ -127,7 +137,7 @@ These are fixture-driven checks, not live deployment certification. Full crash/r
 - pi-durable, pi-ai, pi-codemode, and Chord **1.4.0**.
 - TypeScript **5.9.3**; tsx **4.23.15**.
 
-The Frigate fixture/status/discovery/event contract was checked against **v0.18.2 tagged source**, specifically HTTP handlers in `frigate/api/app.py`, authentication in `frigate/api/auth.py`, event queries in `frigate/api/event.py`, and statistics generation in `frigate/stats/util.py`. Do not substitute current development-branch parameter definitions for a released API guarantee.
+The Frigate fixture/status/discovery/event/review/recording contract was checked against **v0.18.2 tagged source**, specifically HTTP handlers in `frigate/api/app.py`, authentication in `frigate/api/auth.py`, event queries in `frigate/api/event.py`, review queries in `frigate/api/review.py`, recording queries in `frigate/api/record.py`, and statistics generation in `frigate/stats/util.py`. Do not substitute current development-branch parameter definitions for a released API guarantee.
 
 Status classifies 0.18.2 and hexadecimal commit-suffixed builds as supported for this narrow contract, pre-0.18 releases as unsupported, and other versions as unknown. It may still return observations for unknown versions, but warns explicitly. No live NVR has been certified.
 
@@ -138,6 +148,8 @@ References:
 - https://github.com/blakeblackshear/frigate/blob/v0.18.2/frigate/api/app.py
 - https://github.com/blakeblackshear/frigate/blob/v0.18.2/frigate/api/auth.py
 - https://github.com/blakeblackshear/frigate/blob/v0.18.2/frigate/api/event.py
+- https://github.com/blakeblackshear/frigate/blob/v0.18.2/frigate/api/review.py
+- https://github.com/blakeblackshear/frigate/blob/v0.18.2/frigate/api/record.py
 - https://github.com/blakeblackshear/frigate/blob/v0.18.2/frigate/stats/util.py
 
 ## Important integration details
@@ -151,14 +163,15 @@ References:
 - A replay-safe read may be repeated if interrupted before its result is committed and can observe newer data. No exactly-once or cross-call snapshot guarantee is claimed.
 - Host lifecycle: create the bridge again after restart; close the harness before closing the sandbox and bridge. Never persist clients, transport objects, or credentials.
 
-## Next slice: issue #5
+## Next slice: issue #6
 
 Implement the approved ticket end to end, retaining the same high-level test boundary. In particular:
 
-1. Add `list_review_items` and `get_review_item` over `GET /review` and `GET /review/{review_id}`, keeping review segments distinct from object events.
-2. Add `get_recording_summary` over `GET /{camera}/recordings/summary` and `list_recordings` over `GET /{camera}/recordings`, with required bounded time ranges and the upstream's actual scope.
-3. Enforce the camera scope on every review, recording, and camera-scoped lookup; never mark reviews viewed or mutate anything.
-4. Extend the bridge's known manifest/registrations, schemas, documentation, fixtures, and boundary tests as part of the slice.
+1. Add `get_latest_frame` over `GET /{camera}/latest.jpg` and `get_event_image` over `GET /events/{event_id}/snapshot.jpg` or `/thumbnail.jpg`, with bounded image bytes and explicit source/freshness caveats.
+2. Return bounded MCP image blocks plus small structured metadata, and preserve those image blocks through the durable bridge so code mode can forward them with `image()` instead of printing base64.
+3. Enforce the camera scope on every image request and never fetch media for an out-of-scope camera.
+4. Distinguish a capture timestamp from a retrieval timestamp, and report an unavailable image as an explicit error rather than an empty success.
+5. Extend the bridge's known manifest/registrations, schemas, documentation, fixtures, and boundary tests as part of the slice.
 
 Do not broaden v1 into arbitrary HTTP, mutations, PTZ, Frigate Chat delegation, live streaming, monitoring/background jobs, or multi-instance federation. The user's actual agent application and deployment details have not been identified; do not modify neighboring repositories based on assumptions.
 
@@ -172,6 +185,7 @@ Use authenticated Frigate port 8971 or a trusted TLS reverse proxy. Port 5000 by
 | [#2](https://github.com/punissuer/frigate-mcp/issues/2) | Authentication and camera discovery; landed | #1 |
 | [#3](https://github.com/punissuer/frigate-mcp/issues/3) | Filter and inspect object events; landed | #2 |
 | [#4](https://github.com/punissuer/frigate-mcp/issues/4) | Semantic event search; landed | #3 |
+| [#5](https://github.com/punissuer/frigate-mcp/issues/5) | Reviews and recording availability; landed | #2 |
 | [#4](https://github.com/punissuer/frigate-mcp/issues/4) | Semantic event search | #3 |
 | [#5](https://github.com/punissuer/frigate-mcp/issues/5) | Reviews and recording availability | #2 |
 | [#6](https://github.com/punissuer/frigate-mcp/issues/6) | Frames and event images | #3 |
@@ -188,4 +202,5 @@ Use authenticated Frigate port 8971 or a trusted TLS reverse proxy. Port 5000 by
 - [x] Implement #2 as the next vertical slice, extending the real code-mode/stdio/HTTP-fixture tests.
 - [x] Implement #3 as the next vertical slice, extending the real code-mode/stdio/HTTP-fixture tests.
 - [x] Implement #4 as the next vertical slice, extending the real code-mode/stdio/HTTP-fixture tests.
-- [ ] Read GitHub issue #5 in full and implement it as the next vertical slice.
+- [x] Implement #5 as the next vertical slice, extending the real code-mode/stdio/HTTP-fixture tests.
+- [ ] Read GitHub issue #6 in full and implement it as the next vertical slice.

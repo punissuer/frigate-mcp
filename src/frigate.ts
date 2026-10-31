@@ -7,12 +7,22 @@ import {
   getEventOutputSchema,
   listCamerasOutputSchema,
   listEventsOutputSchema,
+  listRecordingsOutputSchema,
+  listReviewItemsOutputSchema,
+  getRecordingSummaryOutputSchema,
+  getReviewItemOutputSchema,
   searchEventsOutputSchema,
   outputSchema,
   statisticsSchema,
   type CapabilitiesResult,
   type EventSummary,
   type GetEventResult,
+  type GetRecordingSummaryResult,
+  type GetReviewItemResult,
+  type ListRecordingsResult,
+  type ListReviewItemsResult,
+  type ListReviewItemsInput,
+  type ListRecordingsInput,
   type ListEventsInput,
   type ListCamerasResult,
   type ListEventsResult,
@@ -26,6 +36,32 @@ import {
 type Outcome<T> = { ok: true; value: T } | { ok: false; error: ReadError };
 type SearchCapability = 'supported' | 'disabled' | 'unsupported' | 'unknown';
 type RawResponse = { status: number; body: Buffer; headers: Record<string, string | string[] | undefined> };
+type ReviewSummary = { id: string; camera: string; startTime: number; endTime?: number; severity: 'alert' | 'detection'; reviewed: boolean; eventReferences: string[] };
+
+/**
+ * Convert an upstream timestamp to UTC Unix seconds.
+ *
+ * Frigate returns review times as ISO 8601 strings without a zone offset and
+ * recording times as Unix numbers. A naive timestamp is read as UTC, because
+ * that is how Frigate stores it.
+ */
+function toUnixSeconds(value: unknown): number | undefined {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
+  if (typeof value !== 'string') return undefined;
+  const match = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:?\d{2})?$/.exec(value.trim());
+  if (!match) return undefined;
+  const [, year, month, day, hour, minute, second, fraction, zone] = match;
+  const base = Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second)) / 1000;
+  const precision = fraction ? Number(`0.${fraction}`) : 0;
+  let offset = 0;
+  if (zone && zone !== 'Z') {
+    const sign = zone.startsWith('-') ? -1 : 1;
+    const parts = zone.slice(1).replace(':', '').match(/(\d{2})(\d{2})/);
+    if (parts) offset = sign * (Number(parts[1]) * 3600 + Number(parts[2]) * 60);
+  }
+  const seconds = base + precision - offset;
+  return Number.isFinite(seconds) ? seconds : undefined;
+}
 
 const problem = (code: ReadError['code'], message: string, retryable = false, status?: number): ReadError =>
   ({ code, message, retryable, ...(status === undefined ? {} : { status }) });
@@ -641,5 +677,249 @@ export class FrigateClient {
       const parsed = JSON.parse(body.toString('utf8')) as { message?: unknown };
       return parsed?.message === 'Semantic search is not enabled';
     } catch { return false; }
+  }
+
+  /** Translate one upstream review segment into the sanitized, allowlisted shape. */
+  #sanitizeReview(raw: unknown): { ok: true; value: ReviewSummary } | { ok: false; error: ReadError } {
+    if (!raw || typeof raw !== 'object') return { ok: false, error: problem('malformed_response', 'Unexpected Frigate review response') };
+    const review = raw as Record<string, unknown>;
+    const id = typeof review.id === 'string' ? review.id : undefined;
+    const camera = typeof review.camera === 'string' ? review.camera : undefined;
+    if (!id || id.length > 64 || !camera || camera.length > 64) {
+      return { ok: false, error: problem('malformed_response', 'Unexpected Frigate review response') };
+    }
+    const startTime = toUnixSeconds(review.start_time);
+    const endTime = toUnixSeconds(review.end_time);
+    if (startTime === undefined) return { ok: false, error: problem('malformed_response', 'Unexpected Frigate review response') };
+    const severity = review.severity === 'alert' || review.severity === 'detection' ? review.severity : undefined;
+    if (!severity) return { ok: false, error: problem('malformed_response', 'Unexpected Frigate review response') };
+    const data = review.data && typeof review.data === 'object' ? review.data as Record<string, unknown> : undefined;
+    const detections = data && Array.isArray(data.detections) ? data.detections : [];
+    const eventReferences = detections
+      .filter((value): value is string => typeof value === 'string' && value.length > 0 && value.length <= 64)
+      .slice(0, 100);
+    return {
+      ok: true,
+      value: {
+        id,
+        camera,
+        startTime,
+        ...(endTime === undefined ? {} : { endTime }),
+        severity,
+        reviewed: review.has_been_reviewed === true,
+        eventReferences,
+      },
+    };
+  }
+
+  async listReviewItems(input: ListReviewItemsInput, cancellation?: AbortSignal): Promise<ListReviewItemsResult> {
+    const deadline = AbortSignal.timeout(this.#options.timeoutMs);
+    const signal = cancellation ? AbortSignal.any([cancellation, deadline]) : deadline;
+    const limit = Math.min(input.limit ?? this.#options.eventsPageSize, this.#options.eventsPageSize, 200);
+    const interval = { after: input.after, before: input.before, maxWindowSeconds: this.#options.eventsMaxWindowSeconds };
+    const empty = { reviews: [], interval, completeness: { complete: true, truncated: false }, limit, returned: 0 };
+    const failure = (error: ReadError, warnings: string[] = []) =>
+      listReviewItemsOutputSchema.parse({ ok: false, error, data: empty, meta: this.#metadata(warnings) });
+
+    if (Math.abs(input.after) > 1e11 || Math.abs(input.before) > 1e11) {
+      return failure(problem('invalid_request', 'Timestamps must be UTC Unix seconds, not milliseconds'), ['Timestamps are interpreted as UTC Unix seconds']);
+    }
+    if (!(input.before > input.after)) {
+      return failure(problem('invalid_request', 'Interval start must be earlier than its end'));
+    }
+    if (input.before - input.after > this.#options.eventsMaxWindowSeconds) {
+      return failure(problem('invalid_request', `Interval exceeds the configured ${this.#options.eventsMaxWindowSeconds} second maximum window`));
+    }
+    const allowed = this.#options.cameraScopeRestricted ? new Set(this.#options.cameras) : undefined;
+    if (allowed && input.cameras?.some(camera => !allowed.has(camera))) {
+      return failure(problem('forbidden', 'One or more cameras are outside the configured scope'));
+    }
+    const requestedCameras = input.cameras?.length ? input.cameras : allowed ? [...allowed] : undefined;
+
+    const query = new URLSearchParams();
+    query.set('after', String(input.after));
+    query.set('before', String(input.before));
+    query.set('limit', String(limit));
+    if (requestedCameras?.length) query.set('cameras', requestedCameras.join(','));
+    if (input.labels?.length) query.set('labels', input.labels.join(','));
+    if (input.zones?.length) query.set('zones', input.zones.join(','));
+    if (input.severity !== undefined) query.set('severity', input.severity);
+    if (input.reviewed !== undefined) query.set('reviewed', input.reviewed ? '1' : '0');
+
+    const admitted = this.#admit();
+    try {
+      const raw = await this.#request(`review?${query.toString()}`, 'application/json', signal);
+      if (!raw.ok) return failure(raw.error);
+      if (raw.value.status !== 200) return failure(this.#statusError(raw.value.status));
+      if (!this.#hasMime(raw.value, 'application/json')) return failure(problem('malformed_response', 'Unexpected Frigate content type'));
+      let parsed: unknown;
+      try { parsed = JSON.parse(raw.value.body.toString('utf8')); }
+      catch { return failure(problem('malformed_response', 'Unexpected Frigate review response')); }
+      if (!Array.isArray(parsed)) return failure(problem('malformed_response', 'Unexpected Frigate review response'));
+      const reviews: ReviewSummary[] = [];
+      const seen = new Set<string>();
+      for (const entry of parsed) {
+        const sanitized = this.#sanitizeReview(entry);
+        if (!sanitized.ok) return failure(sanitized.error);
+        if (allowed && !allowed.has(sanitized.value.camera)) continue;
+        if (seen.has(sanitized.value.id)) continue;
+        seen.add(sanitized.value.id);
+        reviews.push(sanitized.value);
+        if (reviews.length > 200) return failure(problem('payload_too_large', 'Frigate returned more review items than the server can bound'));
+      }
+      // The upstream review list has no paging; a filled limit may hide more items.
+      const truncated = reviews.length >= limit;
+      const data = { reviews, interval, completeness: { complete: !truncated, truncated }, limit, returned: reviews.length };
+      if (JSON.stringify(data).length > this.#options.maxResultBytes) {
+        return failure(problem('payload_too_large', 'The review result exceeds the configured result size limit'));
+      }
+      const warnings: string[] = [];
+      if (truncated) warnings.push('The review limit was reached; the upstream review list has no further paging');
+      return listReviewItemsOutputSchema.parse({ ok: true, data, meta: this.#metadata(warnings) });
+    } finally {
+      if (admitted) this.#release();
+    }
+  }
+
+  async getReviewItem(reviewId: string, cancellation?: AbortSignal): Promise<GetReviewItemResult> {
+    const deadline = AbortSignal.timeout(this.#options.timeoutMs);
+    const signal = cancellation ? AbortSignal.any([cancellation, deadline]) : deadline;
+    const failure = (error: ReadError) =>
+      getReviewItemOutputSchema.parse({ ok: false, error, data: {}, meta: this.#metadata([]) });
+    if (!/^[A-Za-z0-9_.-]{1,64}$/.test(reviewId) || reviewId.includes('..')) {
+      return failure(problem('invalid_request', 'Invalid review identifier'));
+    }
+    const admitted = this.#admit();
+    try {
+      const raw = await this.#request(`review/${encodeURIComponent(reviewId)}`, 'application/json', signal);
+      if (!raw.ok) return failure(raw.error);
+      if (raw.value.status === 404) return failure(problem('not_found', 'Frigate review item not found', false, 404));
+      if (raw.value.status !== 200) return failure(this.#statusError(raw.value.status));
+      if (!this.#hasMime(raw.value, 'application/json')) return failure(problem('malformed_response', 'Unexpected Frigate content type'));
+      let parsed: unknown;
+      try { parsed = JSON.parse(raw.value.body.toString('utf8')); }
+      catch { return failure(problem('malformed_response', 'Unexpected Frigate review response')); }
+      const sanitized = this.#sanitizeReview(parsed);
+      if (!sanitized.ok) return failure(sanitized.error);
+      if (this.#options.cameraScopeRestricted && !this.#options.cameras.includes(sanitized.value.camera)) {
+        // Do not reveal references or metadata of a review outside the scope.
+        return failure(problem('forbidden', 'The review item is outside the configured camera scope'));
+      }
+      return getReviewItemOutputSchema.parse({ ok: true, data: { review: sanitized.value }, meta: this.#metadata([]) });
+    } finally {
+      if (admitted) this.#release();
+    }
+  }
+
+  async getRecordingSummary(camera: string, cancellation?: AbortSignal): Promise<GetRecordingSummaryResult> {
+    const deadline = AbortSignal.timeout(this.#options.timeoutMs);
+    const signal = cancellation ? AbortSignal.any([cancellation, deadline]) : deadline;
+    const failure = (error: ReadError) =>
+      getRecordingSummaryOutputSchema.parse({ ok: false, error, data: { camera, scope: 'all_recorded_days' as const, days: [] }, meta: this.#metadata([]) });
+    if (this.#options.cameraScopeRestricted && !this.#options.cameras.includes(camera)) {
+      return failure(problem('forbidden', 'The camera is outside the configured scope'));
+    }
+    const admitted = this.#admit();
+    try {
+      const raw = await this.#request(`${camera}/recordings/summary`, 'application/json', signal);
+      if (!raw.ok) return failure(raw.error);
+      if (raw.value.status !== 200) return failure(this.#statusError(raw.value.status));
+      if (!this.#hasMime(raw.value, 'application/json')) return failure(problem('malformed_response', 'Unexpected Frigate content type'));
+      let parsed: unknown;
+      try { parsed = JSON.parse(raw.value.body.toString('utf8')); }
+      catch { return failure(problem('malformed_response', 'Unexpected Frigate recording summary response')); }
+      if (!Array.isArray(parsed)) return failure(problem('malformed_response', 'Unexpected Frigate recording summary response'));
+      const days: GetRecordingSummaryResult['data']['days'] = [];
+      for (const entry of parsed) {
+        if (days.length >= 400) return failure(problem('payload_too_large', 'Frigate returned more summary days than the server can bound'));
+        const day = entry as Record<string, unknown>;
+        const hours = Array.isArray(day.hours) ? day.hours : [];
+        days.push({
+          day: typeof day.day === 'string' ? day.day.slice(0, 32) : '',
+          events: typeof day.events === 'number' && Number.isFinite(day.events) ? Math.max(0, Math.trunc(day.events)) : 0,
+          hours: hours.slice(0, 48).map(hour => {
+            const value = hour as Record<string, unknown>;
+            return {
+              hour: typeof value.hour === 'string' ? value.hour.slice(0, 8) : '',
+              events: typeof value.events === 'number' && Number.isFinite(value.events) ? Math.max(0, Math.trunc(value.events)) : 0,
+              motion: typeof value.motion === 'number' && Number.isFinite(value.motion) ? Math.max(0, value.motion) : 0,
+              objects: typeof value.objects === 'number' && Number.isFinite(value.objects) ? Math.max(0, value.objects) : 0,
+              duration: typeof value.duration === 'number' && Number.isFinite(value.duration) ? Math.max(0, value.duration) : 0,
+            };
+          }),
+        });
+      }
+      const data = { camera, scope: 'all_recorded_days' as const, days };
+      if (JSON.stringify(data).length > this.#options.maxResultBytes) {
+        return failure(problem('payload_too_large', 'The recording summary exceeds the configured result size limit'));
+      }
+      return getRecordingSummaryOutputSchema.parse({ ok: true, data, meta: this.#metadata(['The upstream summary covers every recorded day for this camera']) });
+    } finally {
+      if (admitted) this.#release();
+    }
+  }
+
+  async listRecordings(input: ListRecordingsInput, cancellation?: AbortSignal): Promise<ListRecordingsResult> {
+    const deadline = AbortSignal.timeout(this.#options.timeoutMs);
+    const signal = cancellation ? AbortSignal.any([cancellation, deadline]) : deadline;
+    const interval = { after: input.after, before: input.before, maxWindowSeconds: this.#options.eventsMaxWindowSeconds };
+    const empty = { camera: input.camera, interval, intervals: [], gaps: [], completeness: { complete: true, truncated: false } };
+    const failure = (error: ReadError) =>
+      listRecordingsOutputSchema.parse({ ok: false, error, data: empty, meta: this.#metadata([]) });
+
+    if (Math.abs(input.after) > 1e11 || Math.abs(input.before) > 1e11) {
+      return failure(problem('invalid_request', 'Timestamps must be UTC Unix seconds, not milliseconds'));
+    }
+    if (!(input.before > input.after)) {
+      return failure(problem('invalid_request', 'Interval start must be earlier than its end'));
+    }
+    if (input.before - input.after > this.#options.eventsMaxWindowSeconds) {
+      return failure(problem('invalid_request', `Interval exceeds the configured ${this.#options.eventsMaxWindowSeconds} second maximum window`));
+    }
+    if (this.#options.cameraScopeRestricted && !this.#options.cameras.includes(input.camera)) {
+      return failure(problem('forbidden', 'The camera is outside the configured scope'));
+    }
+    const admitted = this.#admit();
+    try {
+      const query = new URLSearchParams();
+      query.set('after', String(input.after));
+      query.set('before', String(input.before));
+      const raw = await this.#request(`${input.camera}/recordings?${query.toString()}`, 'application/json', signal);
+      if (!raw.ok) return failure(raw.error);
+      if (raw.value.status !== 200) return failure(this.#statusError(raw.value.status));
+      if (!this.#hasMime(raw.value, 'application/json')) return failure(problem('malformed_response', 'Unexpected Frigate content type'));
+      let parsed: unknown;
+      try { parsed = JSON.parse(raw.value.body.toString('utf8')); }
+      catch { return failure(problem('malformed_response', 'Unexpected Frigate recordings response')); }
+      if (!Array.isArray(parsed)) return failure(problem('malformed_response', 'Unexpected Frigate recordings response'));
+      const intervals: { startTime: number; endTime: number; duration?: number }[] = [];
+      for (const entry of parsed) {
+        if (intervals.length > 2000) return failure(problem('payload_too_large', 'Frigate returned more recording intervals than the server can bound'));
+        const record = entry as Record<string, unknown>;
+        const startTime = toUnixSeconds(record.start_time);
+        const endTime = toUnixSeconds(record.end_time);
+        if (startTime === undefined || endTime === undefined) {
+          return failure(problem('malformed_response', 'Unexpected Frigate recordings response'));
+        }
+        const duration = typeof record.duration === 'number' && Number.isFinite(record.duration) ? record.duration : undefined;
+        intervals.push({ startTime, endTime, ...(duration === undefined ? {} : { duration }) });
+      }
+      intervals.sort((left, right) => left.startTime - right.startTime);
+      // Gaps are derived from the returned intervals and clipped to the request.
+      const gaps: { startTime: number; endTime: number; duration: number }[] = [];
+      let cursor = input.after;
+      for (const segment of intervals) {
+        if (segment.startTime > cursor) gaps.push({ startTime: cursor, endTime: segment.startTime, duration: segment.startTime - cursor });
+        cursor = Math.max(cursor, segment.endTime);
+      }
+      if (input.before > cursor) gaps.push({ startTime: cursor, endTime: input.before, duration: input.before - cursor });
+      const data = { camera: input.camera, interval, intervals, gaps, completeness: { complete: true, truncated: false } };
+      if (JSON.stringify(data).length > this.#options.maxResultBytes) {
+        return failure(problem('payload_too_large', 'The recording result exceeds the configured result size limit'));
+      }
+      return listRecordingsOutputSchema.parse({ ok: true, data, meta: this.#metadata([]) });
+    } finally {
+      if (admitted) this.#release();
+    }
   }
 }
