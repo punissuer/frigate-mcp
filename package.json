@@ -1,6 +1,6 @@
 {
   "name": "frigate-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Read-only Frigate MCP tools with an optional pi-durable code-mode bridge",
   "type": "module",
   "license": "MIT",

@@ -4,7 +4,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js';
-import { statusManifest, outputSchema } from '../src/contract.js';
+import { statusManifest, outputSchema, toolManifests } from '../src/contract.js';
 import { startFixture, type Override } from './helpers/fixture.js';
 import { runScript, serverParameters } from './helpers/durable.js';
 
@@ -51,11 +51,16 @@ test('conventional MCP client receives bounded schemas, read-only annotations, a
     try {
       await client.connect(transport);
       const { tools } = await client.listTools();
-      assert.equal(tools.length, 1);
-      assert.deepEqual(tools[0]?.inputSchema, statusManifest.inputSchema);
-      assert.deepEqual(tools[0]?.outputSchema, statusManifest.outputSchema);
-      assert.equal(tools[0]?.annotations?.readOnlyHint, true);
-      assert.equal(tools[0]?.annotations?.destructiveHint, false);
+      assert.equal(tools.length, 3);
+      for (const tool of tools) {
+        const expected = toolManifests[tool.name as keyof typeof toolManifests];
+        assert.ok(expected, `unexpected tool ${tool.name}`);
+        assert.deepEqual(tool.inputSchema, expected.inputSchema);
+        assert.deepEqual(tool.outputSchema, expected.outputSchema);
+        assert.equal(tool.annotations?.readOnlyHint, true);
+        assert.equal(tool.annotations?.destructiveHint, false);
+      }
+      assert.ok(tools.some(tool => tool.name === 'get_system_status'));
       const result = CallToolResultSchema.parse(await client.callTool({ name: 'get_system_status', arguments: {} }));
       assert.equal(result.isError, false);
       assert.equal(result.content[0]?.type, 'text');
@@ -87,7 +92,8 @@ for (const [status, code, retryable] of [
       assert.match(output, /"health":\{"ok":true,"alive":true\}/);
       assert.match(output, status === 401 || status === 403 ? /"authorizedApiAccess":"denied"/ : /"authorizedApiAccess":"unknown"/);
       assert.doesNotMatch(output, /SECRET|attacker/);
-      assert.equal(fixture.requests.length, 3, 'no unsafe redirect or auth retry');
+      const expectedRequests = retryable ? 5 : 3;
+      assert.equal(fixture.requests.length, expectedRequests, 'only transient failures are retried');
     });
   });
 }
