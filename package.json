@@ -1,0 +1,42 @@
+{
+  "name": "frigate-mcp",
+  "version": "0.1.0",
+  "description": "Read-only Frigate MCP tools with an optional pi-durable code-mode bridge",
+  "type": "module",
+  "license": "MIT",
+  "engines": { "node": ">=24.15.0 <25" },
+  "bin": { "frigate-mcp": "dist/cli.js" },
+  "exports": {
+    ".": { "types": "./dist/server.d.ts", "import": "./dist/server.js" },
+    "./durable": { "types": "./dist/durable.d.ts", "import": "./dist/durable.js" }
+  },
+  "files": ["dist", "README.md", "LICENSE"],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && tsx --test --test-timeout=15000 test/*.test.ts",
+    "smoke": "npm run build && tsx examples/smoke.ts",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "zod": "4.6.7"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-durable": "1.4.0",
+    "@earendil-works/pi-ai": "1.4.0"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-durable": { "optional": true },
+    "@earendil-works/pi-ai": { "optional": true }
+  },
+  "devDependencies": {
+    "@earendil-works/chord": "1.4.0",
+    "@earendil-works/pi-ai": "1.4.0",
+    "@earendil-works/pi-codemode": "1.4.0",
+    "@earendil-works/pi-durable": "1.4.0",
+    "@types/node": "24.12.0",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3"
+  }
+}
