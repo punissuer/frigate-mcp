@@ -1,6 +1,6 @@
 {
   "name": "frigate-mcp",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Read-only Frigate MCP tools with an optional pi-durable code-mode bridge",
   "type": "module",
   "license": "MIT",
@@ -34,7 +34,8 @@
     "prepack": "npm run build",
     "test:live": "npm run build && tsx --test --test-timeout=60000 test/live.test.ts",
     "example:investigation": "npm run build && tsx examples/investigation.ts",
-    "example:fallback": "npm run build && tsx examples/fallback-and-clip.ts"
+    "example:fallback": "npm run build && tsx examples/fallback-and-clip.ts",
+    "example:pi-durable": "npm run build && tsx examples/pi-durable-host.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2",

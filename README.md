@@ -270,6 +270,11 @@ Exact tested dependency versions are locked: MCP SDK **1.32.2**, Zod **4.6.7**, 
 
 ## pi-durable integration
 
+A complete, runnable host is in [`examples/pi-durable-host.ts`](examples/pi-durable-host.ts)
+(`npm run example:pi-durable`), and the full walkthrough — wiring, the script
+surface, image and clip forwarding, restart/replay, and troubleshooting — is in
+[docs/PI_DURABLE.md](docs/PI_DURABLE.md).
+
 Install the optional durable peers at **1.4.0** in the host application, along with pi-codemode and Chord. Pi CLI's `mcp.json` alone does not register tools in a pi-durable harness.
 
 ```ts

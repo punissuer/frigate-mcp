@@ -128,6 +128,8 @@ The server rejects unsafe configuration, sanitizes startup and upstream errors, 
 | `test/live.test.ts` | Opt-in, non-destructive live compatibility check (skipped without an API root) |
 | `examples/investigation.ts` | Discovery, bounded cross-camera reads, and image forwarding |
 | `examples/fallback-and-clip.ts` | An unavailable feature with a fallback, and evidence clip delivery |
+| `examples/pi-durable-host.ts` | A complete pi-durable host with code mode and the Frigate bridge |
+| `docs/PI_DURABLE.md` | The pi-durable code-mode walkthrough |
 | `test/helpers/recovery-child.ts` | Child process that runs one investigation against persistent durable storage |
 | `examples/smoke.ts` | Reproducible offline end-to-end demonstration |
 | `.github/workflows/ci.yml` | Node 24 install, typecheck, tests, smoke, packaging, production audit |
