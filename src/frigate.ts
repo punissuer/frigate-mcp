@@ -160,6 +160,7 @@ export class FrigateClient {
           if (error.kind === 'payload_too_large') return { ok: false, error: problem('payload_too_large', 'Frigate response exceeded byte limit') };
           if (error.kind === 'certificate_trust') return { ok: false, error: problem('untrusted_certificate', "Frigate's certificate is not trusted; set FRIGATE_CA_CERT_FILE to the certificate authority", false) };
           if (error.kind === 'certificate_hostname') return { ok: false, error: problem('certificate_mismatch', "Frigate's certificate does not match this host; set FRIGATE_TLS_PIN_CERT_FILE to pin the exact certificate", false) };
+          if (error.kind === 'certificate_pin') return { ok: false, error: problem('certificate_mismatch', "the pinned certificate does not match the server's certificate; update FRIGATE_TLS_PIN_CERT_FILE or remove it to trust the system store", false) };
           if (transientRetries < MAX_TRANSIENT_RETRIES && !signal.aborted) {
             transientRetries++;
             if (!await this.#wait(this.#backoff(transientRetries), signal)) return { ok: false, error: problem('timeout', 'Frigate status deadline exceeded', true) };
@@ -978,6 +979,7 @@ export class FrigateClient {
         if (error.kind === 'payload_too_large') return { ok: false, error: problem('payload_too_large', 'Frigate media exceeded the media byte limit') };
         if (error.kind === 'certificate_trust') return { ok: false, error: problem('untrusted_certificate', "Frigate's certificate is not trusted; set FRIGATE_CA_CERT_FILE to the certificate authority", false) };
         if (error.kind === 'certificate_hostname') return { ok: false, error: problem('certificate_mismatch', "Frigate's certificate does not match this host; set FRIGATE_TLS_PIN_CERT_FILE to pin the exact certificate", false) };
+        if (error.kind === 'certificate_pin') return { ok: false, error: problem('certificate_mismatch', "the pinned certificate does not match the server's certificate; update FRIGATE_TLS_PIN_CERT_FILE or remove it to trust the system store", false) };
         return { ok: false, error: problem('unreachable', 'Unable to reach Frigate', true) };
       }
       return { ok: false, error: problem('unreachable', 'Unable to reach Frigate', true) };
@@ -1142,6 +1144,7 @@ export class FrigateClient {
         if (error.kind === 'payload_too_large') return { ok: false, error: problem('payload_too_large', 'Frigate clip exceeded the clip byte limit') };
         if (error.kind === 'certificate_trust') return { ok: false, error: problem('untrusted_certificate', "Frigate's certificate is not trusted; set FRIGATE_CA_CERT_FILE to the certificate authority", false) };
         if (error.kind === 'certificate_hostname') return { ok: false, error: problem('certificate_mismatch', "Frigate's certificate does not match this host; set FRIGATE_TLS_PIN_CERT_FILE to pin the exact certificate", false) };
+        if (error.kind === 'certificate_pin') return { ok: false, error: problem('certificate_mismatch', "the pinned certificate does not match the server's certificate; update FRIGATE_TLS_PIN_CERT_FILE or remove it to trust the system store", false) };
         return { ok: false, error: problem('unreachable', 'Unable to reach Frigate', true) };
       }
       if (error instanceof ArtifactError) {

@@ -66,10 +66,20 @@ Two details that are easy to get wrong:
 `FRIGATE_CAMERAS` is optional but recommended: it restricts what the agent can
 see (see [Camera scope](#6-camera-scope)).
 
-## 3. Self-signed certificates
+## 3. TLS: a reverse proxy, or a self-signed certificate
 
-Frigate's built-in certificate is self-signed with a wildcard common name
-(`CN = *`) and **no subject alternative name**. Two consequences:
+**Preferred: put Frigate behind an HTTPS reverse proxy with a real
+certificate.** The proxy's certificate is issued by a public CA, so the system
+trust store already trusts it and no extra configuration is needed:
+
+```sh
+FRIGATE_API_ROOT=https://frigate.example.com/api
+# no CA file, no pinning
+```
+
+**Only when talking to Frigate directly** do you need the self-signed
+workflow below. Frigate's built-in certificate is self-signed with a wildcard
+common name (`CN = *`) and **no subject alternative name**. Two consequences:
 
 - Trusting it as a certificate authority (`FRIGATE_CA_CERT_FILE`) is not
   enough: a hostname check can never match `*`, so the connection fails with
@@ -95,9 +105,18 @@ and add it to the profile's `.env`:
 FRIGATE_TLS_PIN_CERT_FILE=/home/you/.config/frigate-mcp/frigate-cert.pem
 ```
 
-If the certificate is issued by a real CA, use `FRIGATE_CA_CERT_FILE` (or
-`NODE_EXTRA_CA_CERTS`) instead and skip pinning. TLS verification is never
-disabled: `NODE_TLS_REJECT_UNAUTHORIZED=0` is not a supported configuration.
+If the certificate is issued by a real CA — for example the Let's Encrypt
+certificate of a reverse proxy — trust it normally and **do not pin** it: the
+system trust store already accepts it, and a pin would reject it. Use
+`FRIGATE_CA_CERT_FILE` (or `NODE_EXTRA_CA_CERTS`) only for a private CA.
+TLS verification is never disabled: `NODE_TLS_REJECT_UNAUTHORIZED=0` is not a
+supported configuration.
+
+**One endpoint, one trust setting.** `FRIGATE_TLS_PIN_CERT_FILE` applies to
+every request, so it must match the endpoint you actually use. Pointing the
+server at a reverse proxy while still pinning Frigate's own certificate fails
+with `certificate_mismatch` and the message *"the pinned certificate does not
+match the server's certificate"*.
 
 The server reports TLS problems precisely, so a failure names its remedy:
 

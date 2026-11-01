@@ -147,6 +147,7 @@ export class Session {
       if (error instanceof TransportError) {
         if (error.kind === 'certificate_trust') throw new SessionError('certificate_trust', "Frigate's certificate is not trusted; set FRIGATE_CA_CERT_FILE to the certificate authority");
         if (error.kind === 'certificate_hostname') throw new SessionError('certificate_hostname', "Frigate's certificate does not match this host; set FRIGATE_TLS_PIN_CERT_FILE to pin the exact certificate");
+        if (error.kind === 'certificate_pin') throw new SessionError('certificate_hostname', "the pinned certificate does not match the server's certificate; update FRIGATE_TLS_PIN_CERT_FILE or remove it to trust the system store");
         throw new SessionError(error.kind === 'timeout' ? 'upstream_error' : 'unreachable', 'Unable to reach Frigate to sign in');
       }
       throw error;

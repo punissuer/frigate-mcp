@@ -53,6 +53,35 @@ test('a self-signed certificate is trusted only when it is pinned', async t => {
   }
 });
 
+test('a pinned certificate that is not the server certificate says so', async t => {
+  let material: ReturnType<typeof selfSignedCertificate>;
+  let other: ReturnType<typeof selfSignedCertificate>;
+  try { material = selfSignedCertificate(); other = selfSignedCertificate(); }
+  catch { t.skip('openssl is unavailable in this environment'); return; }
+  const fixture = await startFixture({
+    requireAuth: true,
+    credentials: { user: 'viewer', password: PASSWORD },
+    tls: { key: material.key, cert: material.cert },
+  });
+  try {
+    // The server presents one certificate; the operator pinned a different one.
+    const client = new FrigateClient({
+      apiRoot: fixture.apiRoot,
+      allowInsecureHttp: true,
+      username: 'viewer',
+      password: PASSWORD,
+      tlsPinCertFile: join(other.dir, 'cert.pem'),
+    });
+    const status = await client.status();
+    assert.equal(status.ok, false);
+    assert.equal(status.error?.code, 'certificate_mismatch');
+    assert.match(status.error?.message ?? '', /pinned certificate does not match/);
+    assert.match(status.error?.message ?? '', /FRIGATE_TLS_PIN_CERT_FILE/);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test('a login is followed by an authenticated read, and the credential never leaks', async () => {
   const fixture = await startFixture({ requireAuth: true, credentials: { user: 'viewer', password: PASSWORD } });
   try {

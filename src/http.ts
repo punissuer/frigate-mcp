@@ -12,7 +12,9 @@ export type TransportFailureKind =
   /** The server certificate is not signed by a trusted authority. */
   | 'certificate_trust'
   /** The server certificate does not match the host we asked for. */
-  | 'certificate_hostname';
+  | 'certificate_hostname'
+  /** A pinned certificate was configured, and the server presented another one. */
+  | 'certificate_pin';
 
 /** Transport-level failure. Never carries upstream bodies, URLs with credentials, or headers. */
 export class TransportError extends Error {
@@ -158,9 +160,14 @@ export async function streamToFile(options: StreamRequest): Promise<{ status: nu
       }
       const tls = tlsFailureKind(error);
       if (tls) {
-        fail(new TransportError(tls, tls === 'certificate_hostname'
+        // With a pin configured, a trust failure means the server presented a
+        // different certificate than the pinned one.
+        const kind = tls === 'certificate_trust' && options.pinCertificate ? 'certificate_pin' : tls;
+        fail(new TransportError(kind, kind === 'certificate_hostname'
           ? 'The Frigate certificate does not match this host'
-          : 'The Frigate certificate is not trusted'));
+          : kind === 'certificate_pin'
+            ? 'The pinned certificate does not match the server certificate'
+            : 'The Frigate certificate is not trusted'));
         return;
       }
       fail(new TransportError('unreachable', 'Unable to reach Frigate'));
@@ -230,9 +237,14 @@ export async function performRequest(options: HttpRequest): Promise<HttpResponse
       }
       const tls = tlsFailureKind(error);
       if (tls) {
-        fail(new TransportError(tls, tls === 'certificate_hostname'
+        // With a pin configured, a trust failure means the server presented a
+        // different certificate than the pinned one.
+        const kind = tls === 'certificate_trust' && options.pinCertificate ? 'certificate_pin' : tls;
+        fail(new TransportError(kind, kind === 'certificate_hostname'
           ? 'The Frigate certificate does not match this host'
-          : 'The Frigate certificate is not trusted'));
+          : kind === 'certificate_pin'
+            ? 'The pinned certificate does not match the server certificate'
+            : 'The Frigate certificate is not trusted'));
         return;
       }
       fail(new TransportError('unreachable', 'Unable to reach Frigate'));

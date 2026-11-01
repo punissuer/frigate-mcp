@@ -129,6 +129,8 @@ Environment substitution in this JSON is client-specific. It is **not** a config
 
 Prefer authenticated Frigate port **8971**, directly or through a trusted TLS reverse proxy, and a least-privilege viewer account. Port **5000 bypasses Frigate role enforcement**; use it only on a trusted private network, with explicit `FRIGATE_TRUSTED_UNAUTHENTICATED=true` and explicit HTTP opt-in if applicable. TLS verification stays enabled. `FRIGATE_CA_CERT_FILE` adds a private CA without disabling verification; Node's `NODE_EXTRA_CA_CERTS` also works at process startup. Never use `NODE_TLS_REJECT_UNAUTHORIZED=0`.
 
+**Behind a reverse proxy.** If Frigate is reached through an HTTPS proxy with a publicly trusted certificate (for example Let's Encrypt), the system trust store already accepts it: configure the API root and nothing else. Pinning is only for Frigate's own self-signed certificate.
+
 **Self-signed certificates.** Frigate's built-in certificate is self-signed with a wildcard common name (`CN = *`) and no subject alternative name, so a hostname check can never succeed against it, and `FRIGATE_CA_CERT_FILE` alone still fails with `certificate_mismatch`. Export the certificate once and pin it:
 
 ```sh
