@@ -12,6 +12,7 @@ export const GET_RECORDING_SUMMARY_TOOL = 'get_recording_summary';
 export const LIST_RECORDINGS_TOOL = 'list_recordings';
 export const LATEST_FRAME_TOOL = 'get_latest_frame';
 export const EVENT_IMAGE_TOOL = 'get_event_image';
+export const EVENT_PREVIEW_GIF_TOOL = 'get_event_preview_gif';
 export const EVENT_CLIP_TOOL = 'get_event_clip';
 export const RECORDING_CLIP_TOOL = 'get_recording_clip';
 
@@ -27,6 +28,7 @@ export const GET_RECORDING_SUMMARY_DESCRIPTION = 'Report the upstream recording 
 export const LIST_RECORDINGS_TOOL_DESCRIPTION = 'List the recording intervals of one camera inside a required, bounded UTC Unix-second range, with the gaps between them. Every interval is reported with explicit availability; a gap is missing footage, not evidence that nothing happened.';
 export const LATEST_FRAME_DESCRIPTION = 'Fetch the most recent frame of one permitted camera as a bounded image. The upstream does not report the capture time, so freshness is unknown and the retrieval time is reported separately. When the camera is offline Frigate may answer with a preview frame; that is reported explicitly instead of claiming a live view.';
 export const EVENT_IMAGE_DESCRIPTION = 'Fetch the snapshot or thumbnail of one permitted object event as a bounded image. The event camera is resolved and scope-checked before any media is requested. A missing snapshot, a missing event, and an expired event are reported as distinct outcomes, never as an empty image.';
+export const EVENT_PREVIEW_GIF_DESCRIPTION = 'Fetch the animated preview GIF of one permitted object event as a bounded image. The event camera is resolved and scope-checked before any media is requested. Not every event has a preview: a missing preview, a missing event, and an expired event are reported as distinct outcomes, never as an empty image. Use get_event_image for a still.';
 export const EVENT_CLIP_DESCRIPTION = 'Retrieve the video clip of one permitted object event as a private, expiring artifact. The event duration must be safely bounded before any download starts. The result carries an opaque artifact identifier and resource URI, never the video bytes, a local path, or a credential-bearing URL.';
 export const RECORDING_CLIP_DESCRIPTION = 'Retrieve the recording interval of one permitted camera as a private, expiring artifact, using an explicit bounded UTC Unix-second range. The result carries an opaque artifact identifier and resource URI, never the video bytes, a local path, or a credential-bearing URL.';
 
@@ -99,6 +101,9 @@ export const latestFrameInputSchema = z.strictObject({ camera: cameraIdSchema })
 export const eventImageInputSchema = z.strictObject({
   eventId: z.string().min(1).max(64).regex(/^[A-Za-z0-9_.-]+$/),
   kind: z.enum(['snapshot', 'thumbnail']),
+});
+export const eventPreviewGifInputSchema = z.strictObject({
+  eventId: z.string().min(1).max(64).regex(/^[A-Za-z0-9_.-]+$/),
 });
 export const eventClipInputSchema = z.strictObject({
   eventId: z.string().min(1).max(64).regex(/^[A-Za-z0-9_.-]+$/),
@@ -300,6 +305,18 @@ export const mediaDataSchema = z.strictObject({
   source: z.enum(['live', 'preview_fallback', 'event_media']),
 });
 
+export const previewGifDataSchema = z.strictObject({
+  /** The camera is unknown when the request was rejected before it was resolved. */
+  camera: cameraIdSchema.optional(),
+  kind: z.literal('event_preview_gif'),
+  mimeType: z.literal('image/gif'),
+  byteLength: z.number().int().nonnegative(),
+  /** The upstream does not report the capture time of the media. */
+  captureTime: z.literal('unknown'),
+  retrievedAt: z.iso.datetime(),
+  source: z.literal('event_media'),
+});
+
 export const artifactDataSchema = z.strictObject({
   /** Opaque artifact identifier. */
   artifactId: z.string().min(1).max(64).optional(),
@@ -357,6 +374,8 @@ export const latestFrameOutputSchema = envelope(mediaDataSchema);
 export type LatestFrameResult = z.infer<typeof latestFrameOutputSchema>;
 export const eventImageOutputSchema = envelope(mediaDataSchema);
 export type EventImageResult = z.infer<typeof eventImageOutputSchema>;
+export const eventPreviewGifOutputSchema = envelope(previewGifDataSchema);
+export type EventPreviewGifResult = z.infer<typeof eventPreviewGifOutputSchema>;
 export const eventClipOutputSchema = envelope(artifactDataSchema);
 export type EventClipResult = z.infer<typeof eventClipOutputSchema>;
 export const recordingClipOutputSchema = envelope(artifactDataSchema);
@@ -395,6 +414,7 @@ export const getRecordingSummaryManifest = manifestEntry(GET_RECORDING_SUMMARY_T
 export const listRecordingsManifest = manifestEntry(LIST_RECORDINGS_TOOL, LIST_RECORDINGS_TOOL_DESCRIPTION, listRecordingsInputSchema, listRecordingsOutputSchema);
 export const latestFrameManifest = manifestEntry(LATEST_FRAME_TOOL, LATEST_FRAME_DESCRIPTION, latestFrameInputSchema, latestFrameOutputSchema);
 export const eventImageManifest = manifestEntry(EVENT_IMAGE_TOOL, EVENT_IMAGE_DESCRIPTION, eventImageInputSchema, eventImageOutputSchema);
+export const eventPreviewGifManifest = manifestEntry(EVENT_PREVIEW_GIF_TOOL, EVENT_PREVIEW_GIF_DESCRIPTION, eventPreviewGifInputSchema, eventPreviewGifOutputSchema);
 export const eventClipManifest = manifestEntry(EVENT_CLIP_TOOL, EVENT_CLIP_DESCRIPTION, eventClipInputSchema, eventClipOutputSchema);
 export const recordingClipManifest = manifestEntry(RECORDING_CLIP_TOOL, RECORDING_CLIP_DESCRIPTION, recordingClipInputSchema, recordingClipOutputSchema);
 
@@ -411,6 +431,7 @@ export const toolManifests = {
   [LIST_RECORDINGS_TOOL]: listRecordingsManifest,
   [LATEST_FRAME_TOOL]: latestFrameManifest,
   [EVENT_IMAGE_TOOL]: eventImageManifest,
+  [EVENT_PREVIEW_GIF_TOOL]: eventPreviewGifManifest,
   [EVENT_CLIP_TOOL]: eventClipManifest,
   [RECORDING_CLIP_TOOL]: recordingClipManifest,
 } as const;
@@ -429,6 +450,7 @@ export const toolInputSchemas = {
   [LIST_RECORDINGS_TOOL]: listRecordingsInputSchema,
   [LATEST_FRAME_TOOL]: latestFrameInputSchema,
   [EVENT_IMAGE_TOOL]: eventImageInputSchema,
+  [EVENT_PREVIEW_GIF_TOOL]: eventPreviewGifInputSchema,
   [EVENT_CLIP_TOOL]: eventClipInputSchema,
   [RECORDING_CLIP_TOOL]: recordingClipInputSchema,
 } as const;
@@ -446,6 +468,7 @@ export const toolOutputSchemas = {
   [LIST_RECORDINGS_TOOL]: listRecordingsOutputSchema,
   [LATEST_FRAME_TOOL]: latestFrameOutputSchema,
   [EVENT_IMAGE_TOOL]: eventImageOutputSchema,
+  [EVENT_PREVIEW_GIF_TOOL]: eventPreviewGifOutputSchema,
   [EVENT_CLIP_TOOL]: eventClipOutputSchema,
   [RECORDING_CLIP_TOOL]: recordingClipOutputSchema,
 } as const;
