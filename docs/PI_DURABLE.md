@@ -159,6 +159,9 @@ if (!frame.isError && frame.structuredContent.ok) {
 The structured result never carries the image bytes, so the metadata stays
 small; the image block is what the model actually sees.
 
+`get_event_preview_gif` returns an `image/gif` block the same way; forward it
+with `image()` (or hand it to a host helper).
+
 **Clips** become private, expiring artifacts. The tool returns an opaque URI;
 the host fetches the bytes over the transport:
 

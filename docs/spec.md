@@ -90,6 +90,7 @@ Routes below are relative to the configured API root. Tool arguments receive the
 | `list_recordings` | `GET /{camera}/recordings` | Recording intervals within a required bounded time range. |
 | `get_latest_frame` | `GET /{camera}/latest.jpg` | Bounded image with observation time and source/freshness caveat. |
 | `get_event_image` | `GET /events/{event_id}/snapshot.jpg` or `/thumbnail.jpg` | Explicit snapshot/thumbnail selection, availability checks, bounded image. |
+| `get_event_preview_gif` | `GET /events/{event_id}/preview.gif` | Bounded animated preview, GIF signature checked, event camera scope-checked first. |
 | `get_event_clip` | `GET /events/{event_id}/clip.mp4` | Bounded media retrieval yielding an opaque artifact reference, not inline video. |
 | `get_recording_clip` | `GET /{camera}/start/{start}/end/{end}/clip.mp4` | Same artifact contract with bounded duration and byte count. |
 
