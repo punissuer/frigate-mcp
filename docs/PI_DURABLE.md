@@ -22,6 +22,19 @@ A complete, runnable host is in
 npm run example:pi-durable      # deterministic, offline, against a fixture
 ```
 
+The example is self-contained: it carries its own Frigate-shaped fixture, so it
+also runs from the published package. In a host project:
+
+```sh
+npm install frigate-mcp                       # or: npm install github:punissuer/frigate-mcp
+npm install @earendil-works/pi-durable@1.4.0 @earendil-works/pi-ai@1.4.0 \
+            @earendil-works/pi-codemode@1.4.0 @earendil-works/chord@1.4.0
+npx tsx node_modules/frigate-mcp/examples/pi-durable-host.ts
+```
+
+The host must be ESM (`"type": "module"`), and the example expects the built
+server at `node_modules/frigate-mcp/dist/cli.js`.
+
 ---
 
 ## 1. Install

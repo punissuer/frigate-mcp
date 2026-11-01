@@ -21,8 +21,10 @@ import { CodemodeSandbox } from '@earendil-works/pi-codemode';
 import { createRegistry, Harness } from '@earendil-works/pi-durable';
 import { createCodemodeExtension } from '@earendil-works/pi-durable/codemode';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
-import { connectFrigateStdio, frigateNamespace } from '../src/durable.js';
-import { startFixture } from '../test/helpers/fixture.js';
+// Imported by package name so the example runs both from this repository
+// (Node's package self-reference) and from the published tarball.
+import { connectFrigateStdio, frigateNamespace } from 'frigate-mcp/durable';
+import { startFixture } from './helpers/frigate-fixture.js';
 
 export interface HostOptions {
   /** The API root of the Frigate instance, without credentials. */
@@ -103,7 +105,7 @@ export async function runInvestigation(options: HostOptions) {
 // When run directly: a deterministic, offline demonstration.
 if (import.meta.url === `file://${process.argv[1]}`) {
   const credentials = { user: 'viewer', password: 'offline-example-password' };
-  const fixture = await startFixture({ requireAuth: true, credentials });
+  const fixture = await startFixture({ username: credentials.user, password: credentials.password });
   const models = createModels();
   const faux = fauxProvider();
   models.setProvider(faux.provider);

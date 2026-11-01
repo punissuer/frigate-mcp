@@ -8,6 +8,7 @@
     "exactOptionalPropertyTypes": true,
     "verbatimModuleSyntax": true,
     "skipLibCheck": true,
+    "paths": { "frigate-mcp/durable": ["./src/durable.ts"], "frigate-mcp": ["./src/server.ts"] },
     "declaration": true,
     "outDir": "dist",
     "rootDir": "."

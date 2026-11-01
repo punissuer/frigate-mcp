@@ -22,8 +22,10 @@
   },
   "files": [
     "dist",
+    "docs",
     "examples",
     "README.md",
+    "HERMES_INSTALL.md",
     "LICENSE"
   ],
   "scripts": {

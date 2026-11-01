@@ -99,7 +99,7 @@ export class Session {
     const expiry = decodeJwtExpiry(value);
     if (expiry !== undefined && expiry * 1000 <= Date.now()) return;
     this.#token = value;
-    this.#expiresAt = expiry ?? 0;
+    this.#expiresAt = expiry ?? Number.POSITIVE_INFINITY;
   }
 
   /** Discard the current session so the next read authenticates again. */
@@ -166,7 +166,7 @@ export class Session {
     if (!token) throw new SessionError('malformed_response', 'Frigate sign-in did not return the configured session cookie');
     const expiry = decodeJwtExpiry(token);
     this.#token = token;
-    this.#expiresAt = expiry ?? 0;
+    this.#expiresAt = expiry ?? Number.POSITIVE_INFINITY;
     return token;
   }
 }
