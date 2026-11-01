@@ -117,7 +117,7 @@ export async function connectFrigateHttp(parameters: { url: string; secret: stri
 }
 
 async function connectFrigate(transport: StdioClientTransport | StreamableHTTPClientTransport) {
-  const client = new Client({ name: 'frigate-durable-bridge', version: '1.3.0' });
+  const client = new Client({ name: 'frigate-durable-bridge', version: '1.4.0' });
   try {
     await client.connect(transport);
     const manifest = await client.listTools();

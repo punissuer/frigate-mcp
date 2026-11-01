@@ -6,7 +6,7 @@ Implemented: [issues #1](https://github.com/punissuer/frigate-mcp/issues/1)–[#
 
 ## Develop and verify
 
-Use **Node.js 24 LTS, version 24.15.0 or newer within 24.x**.
+Use **Node.js 24.15.0 or newer** (24 LTS or 26). The tested majors are **24.15.0+** and **26.12.1+**; CI runs the whole suite on both.
 
 ```sh
 npm ci

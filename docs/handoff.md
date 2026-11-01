@@ -132,7 +132,7 @@ The server rejects unsafe configuration, sanitizes startup and upstream errors, 
 | `docs/PI_DURABLE.md` | The pi-durable code-mode walkthrough |
 | `test/helpers/recovery-child.ts` | Child process that runs one investigation against persistent durable storage |
 | `examples/smoke.ts` | Reproducible offline end-to-end demonstration |
-| `.github/workflows/ci.yml` | Node 24 install, typecheck, tests, smoke, packaging, production audit |
+| `.github/workflows/ci.yml` | Node 24 and 26 matrix: install, typecheck, tests, smoke, the pi-durable example, packaging, production audit |
 | `package.json`, `package-lock.json` | Pinned dependencies, optional durable peers, separate exports, build/test commands |
 | `tsconfig.json`, `tsconfig.build.json` | Strict NodeNext TypeScript configuration and declaration build |
 | `.gitignore` | Existing template plus Node dependencies, secrets, and local SQLite state exclusions |
@@ -183,7 +183,7 @@ These are fixture-driven checks, not live deployment certification. Full crash/r
 
 ## Runtime and release baseline
 
-- Node.js **24 LTS, >=24.15.0 and <25**.
+- Node.js **>=24.15.0 and <27** (24 LTS and 26 are tested; CI runs both).
 - MCP SDK **1.32.2**; Zod **4.6.7**.
 - pi-durable, pi-ai, pi-codemode, and Chord **1.4.0**.
 - TypeScript **5.9.3**; tsx **4.23.15**.

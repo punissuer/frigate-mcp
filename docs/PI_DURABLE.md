@@ -43,6 +43,9 @@ server at `node_modules/frigate-mcp/dist/cli.js`.
 npm ci && npm run build          # builds dist/cli.js (the server the bridge spawns)
 ```
 
+Node.js **24.15.0+** (24 LTS or 26); the tested majors are 24.15.0+ and
+26.12.1+, and CI runs the whole suite on both.
+
 In the **host application**, install the optional durable peers at the tested
 versions:
 

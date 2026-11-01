@@ -12,8 +12,9 @@ tools, contracts, camera scope, and policy limits either way.
 
 ## 1. Prerequisites
 
-- **Node.js 24 LTS** (24.15.0 or newer within 24.x) on the machine that runs
-  the server.
+- **Node.js 24.15.0 or newer** (24 LTS or 26) on the machine that runs the
+  server. The tested majors are 24.15.0+ and 26.12.1+; CI runs the whole suite
+  on both.
 - A Frigate instance you can reach, and a **least-privilege viewer account**.
 - Prefer Frigate's authenticated port **8971** over HTTPS. Port **5000** is the
   internal interface: it bypasses Frigate's role enforcement, and it is often

@@ -1,11 +1,11 @@
 {
   "name": "frigate-mcp",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Read-only Frigate MCP tools with an optional pi-durable code-mode bridge",
   "type": "module",
   "license": "MIT",
   "engines": {
-    "node": ">=24.15.0 <25"
+    "node": ">=24.15.0 <27"
   },
   "bin": {
     "frigate-mcp": "dist/cli.js"
