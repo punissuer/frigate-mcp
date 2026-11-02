@@ -77,6 +77,7 @@ const toolParameters = {
     eventId: Type.String(),
     kind: Type.Optional(Type.String()),
   }, { additionalProperties: false }),
+  get_event_preview_gif: Type.Object({ eventId: Type.String() }, { additionalProperties: false }),
   get_event_clip: Type.Object({ eventId: Type.String() }, { additionalProperties: false }),
   get_recording_clip: Type.Object({
     camera: Type.String(),
@@ -86,7 +87,7 @@ const toolParameters = {
 } as const;
 
 /** Tools that answer with a bounded image block plus structured metadata. */
-const MEDIA_TOOLS = new Set<ToolName>(['get_latest_frame', 'get_event_image']);
+const MEDIA_TOOLS = new Set<ToolName>(['get_latest_frame', 'get_event_image', 'get_event_preview_gif']);
 
 /**
  * A host-owned, optional bridge. Create again on host restart; persist only the

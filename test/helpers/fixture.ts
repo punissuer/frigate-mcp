@@ -40,6 +40,9 @@ export type Override = (req: IncomingMessage, res: ServerResponse) => boolean;
 // a bounded body; no decoder reads it.
 export const jpegBytes = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0xff, 0xd9]);
 
+// A tiny valid GIF89a (1x1). The fixture only needs the signature and a bounded body.
+export const gifBytes = Buffer.from('GIF89a\x01\x00\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x01D\x00;', 'binary');
+
 // Review segments modeled on Frigate v0.18.2's ReviewSegmentResponse. Review
 // times are ISO 8601 strings without a zone offset, as FastAPI serializes them.
 export const reviewItems = [
@@ -257,6 +260,17 @@ export async function startFixture(options: FixtureOptions | Override = {}) {
       }
       res.setHeader('content-type', 'image/jpeg');
       res.end(jpegBytes);
+    } else if (/^\/nvr\/api\/events\/[A-Za-z0-9_.-]+\/preview\.gif$/.test(path)) {
+      if (!authorized(req)) { unauthorized(res); return; }
+      const id = decodeURIComponent(path.split('/')[4]!);
+      const found = (settings.events ?? events).find(event => event.id === id);
+      if (!found) {
+        res.writeHead(404, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ success: false, message: 'Event not found' }));
+        return;
+      }
+      res.setHeader('content-type', 'image/gif');
+      res.end(gifBytes);
     } else if (path === '/nvr/api/review') {
       if (!authorized(req)) { unauthorized(res); return; }
       res.setHeader('content-type', 'application/json');

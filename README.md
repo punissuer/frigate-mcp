@@ -2,7 +2,7 @@
 
 Read-only Frigate MCP tools with an optional **pi-durable code-mode bridge**.
 
-Implemented: [issues #1](https://github.com/punissuer/frigate-mcp/issues/1)–[#9](https://github.com/punissuer/frigate-mcp/issues/9) — the complete read-only v1 surface: `get_system_status`, `list_cameras`, `get_capabilities`, `list_events`, `get_event`, `search_events`, `list_review_items`, `get_review_item`, `get_recording_summary`, `list_recordings`, `get_latest_frame`, `get_event_image`, `get_event_clip`, and `get_recording_clip`, over **stdio** and **Streamable HTTP**, with managed login, camera scope, bounded retries, paged event investigation, semantic search, review segments, recording availability, bounded images, private expiring evidence artifacts, and durable restart/replay acceptance.
+Implemented: [issues #1](https://github.com/punissuer/frigate-mcp/issues/1)–[#9](https://github.com/punissuer/frigate-mcp/issues/9) — the complete read-only v1 surface: `get_system_status`, `list_cameras`, `get_capabilities`, `list_events`, `get_event`, `search_events`, `list_review_items`, `get_review_item`, `get_recording_summary`, `list_recordings`, `get_latest_frame`, `get_event_image`, `get_event_preview_gif`, `get_event_clip`, and `get_recording_clip`, over **stdio** and **Streamable HTTP**, with managed login, camera scope, bounded retries, paged event investigation, semantic search, review segments, recording availability, bounded images, private expiring evidence artifacts, and durable restart/replay acceptance.
 
 ## Develop and verify
 
@@ -239,6 +239,15 @@ Fetches the `snapshot` or `thumbnail` of one permitted object event (`GET /event
 
 A missing snapshot (`media_unavailable`), a missing or expired event (`not_found`), and a wrong MIME type (`malformed_response`) are distinct outcomes — never an empty successful image.
 
+### `get_event_preview_gif({ eventId })`
+
+Fetches the animated preview of one permitted object event (`GET /events/{event_id}/preview.gif`) as a bounded `image/gif` MCP block plus small structured metadata. The event is resolved and its camera scope-checked **before** any media is requested.
+
+- The bytes must really be a GIF (`GIF87a` or `GIF89a`) with an `image/gif` type, or the result is `malformed_response`.
+- Not every event has a preview. A missing preview is `media_unavailable` (use `get_event_image` for a still), a missing or expired event is `not_found`. Never an empty successful image.
+- The size cap is `FRIGATE_MEDIA_MAX_BYTES` (5 MiB) and the deadline is `FRIGATE_MEDIA_TIMEOUT_MS`, both enforced while streaming.
+- The structured result never carries the bytes. In code mode, forward the block with `image()` like any other image.
+
 ### `get_event_clip({ eventId })` and `get_recording_clip({ camera, start, end })`
 
 Retrieve evidence video as a **private, expiring artifact**.
@@ -302,7 +311,7 @@ registry.install(createCodemodeExtension({
 // On shutdown: close the harness first, then sandbox.close(), then bridge.close().
 ```
 
-The bridge initializes MCP, validates the exact known read-only manifest, and registers `mcp__frigate__get_system_status`, `mcp__frigate__list_cameras`, `mcp__frigate__get_capabilities`, `mcp__frigate__list_events`, `mcp__frigate__get_event`, `mcp__frigate__search_events`, `mcp__frigate__list_review_items`, `mcp__frigate__get_review_item`, `mcp__frigate__get_recording_summary`, `mcp__frigate__list_recordings`, `mcp__frigate__get_latest_frame`, and `mcp__frigate__get_event_image` as replay-safe nested tools. Connect again on host restart; never persist the live client, credentials, or transport. Tool-contract upgrades require a compatible bridge; an unknown manifest fails closed.
+The bridge initializes MCP, validates the exact known read-only manifest, and registers `mcp__frigate__get_system_status`, `mcp__frigate__list_cameras`, `mcp__frigate__get_capabilities`, `mcp__frigate__list_events`, `mcp__frigate__get_event`, `mcp__frigate__search_events`, `mcp__frigate__list_review_items`, `mcp__frigate__get_review_item`, `mcp__frigate__get_recording_summary`, `mcp__frigate__list_recordings`, `mcp__frigate__get_latest_frame`, `mcp__frigate__get_event_image`, and `mcp__frigate__get_event_preview_gif` as replay-safe nested tools. Connect again on host restart; never persist the live client, credentials, or transport. Tool-contract upgrades require a compatible bridge; an unknown manifest fails closed.
 
 A code-mode investigation can use:
 

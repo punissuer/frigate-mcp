@@ -247,7 +247,7 @@ Fourteen read-only tools, registered as `mcp__frigate__<tool>`:
 | `search_events` | Natural-language search with an explicit capability state |
 | `list_review_items` / `get_review_item` | Review segments — a segment groups detections, it is not one object |
 | `get_recording_summary` / `list_recordings` | Recording availability, with the gaps between intervals |
-| `get_latest_frame` / `get_event_image` | Bounded images, with capture-freshness caveats |
+| `get_latest_frame` / `get_event_image` / `get_event_preview_gif` | Bounded images, with capture-freshness caveats |
 | `get_event_clip` / `get_recording_clip` | Evidence video as a private, expiring artifact |
 
 Every tool answers with a structured envelope (`structuredContent`) mirrored as

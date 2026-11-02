@@ -16,6 +16,10 @@ import {
   eventImageOutputSchema,
   EVENT_IMAGE_DESCRIPTION,
   EVENT_IMAGE_TOOL,
+  eventPreviewGifInputSchema,
+  eventPreviewGifOutputSchema,
+  EVENT_PREVIEW_GIF_DESCRIPTION,
+  EVENT_PREVIEW_GIF_TOOL,
   latestFrameInputSchema,
   latestFrameOutputSchema,
   LATEST_FRAME_DESCRIPTION,
@@ -197,6 +201,15 @@ export function createFrigateServer(options: FrigateOptions): McpServer {
     annotations: READ_ONLY,
   }, async (args, extra) => {
     const { result, media } = await upstream.getEventImage(args.eventId, args.kind, extra.signal);
+    return { content: mediaContent(result, media, result.data.mimeType), structuredContent: result, isError: !result.ok };
+  });
+  server.registerTool(EVENT_PREVIEW_GIF_TOOL, {
+    description: EVENT_PREVIEW_GIF_DESCRIPTION,
+    inputSchema: eventPreviewGifInputSchema,
+    outputSchema: eventPreviewGifOutputSchema,
+    annotations: READ_ONLY,
+  }, async (args, extra) => {
+    const { result, media } = await upstream.getEventPreviewGif(args.eventId, extra.signal);
     return { content: mediaContent(result, media, result.data.mimeType), structuredContent: result, isError: !result.ok };
   });
   server.registerTool(EVENT_CLIP_TOOL, {

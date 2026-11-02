@@ -15,6 +15,7 @@ import {
   listReviewItemsOutputSchema,
   latestFrameOutputSchema,
   eventImageOutputSchema,
+  eventPreviewGifOutputSchema,
   eventClipOutputSchema,
   recordingClipOutputSchema,
   getRecordingSummaryOutputSchema,
@@ -26,6 +27,7 @@ import {
   type EventSummary,
   type EventClipResult,
   type EventImageResult,
+  type EventPreviewGifResult,
   type GetEventResult,
   type RecordingClipResult,
   type LatestFrameResult,
@@ -953,19 +955,16 @@ export class FrigateClient {
   }
 
   /**
-   * Fetch a bounded media resource.
-   *
-   * Media limits are separate from the small JSON-result limit: the byte cap
-   * is enforced while streaming, the MIME type is validated, and the bytes are
-   * never logged or placed in a structured result.
+   * One authenticated image GET. A transport failure or a non-200 status becomes a `ReadError`; the body is bounded
+   * while it streams. The caller decides which content types it accepts.
    */
-  async #fetchMedia(path: string, signal: AbortSignal): Promise<Outcome<{ body: Buffer; mimeType: MediaMimeType; offline: boolean }>> {
+  async #fetchImageResponse(path: string, accept: string, signal: AbortSignal): Promise<Outcome<RawResponse>> {
     let response: RawResponse;
     try {
       const headers = await this.#session.headers(signal);
       const raw = await performRequest({
         url: new URL(path, this.#options.root),
-        headers: { accept: 'image/jpeg,image/png,image/webp', ...headers },
+        headers: { accept, ...headers },
         signal,
         maxBytes: this.#options.mediaMaxBytes,
         ...(this.#options.ca ? { ca: this.#options.ca } : {}),
@@ -986,6 +985,20 @@ export class FrigateClient {
     }
     this.#session.observe(response.headers);
     if (response.status !== 200) return { ok: false, error: this.#statusError(response.status) };
+    return { ok: true, value: response };
+  }
+
+  /**
+   * Fetch a bounded media resource.
+   *
+   * Media limits are separate from the small JSON-result limit: the byte cap
+   * is enforced while streaming, the MIME type is validated, and the bytes are
+   * never logged or placed in a structured result.
+   */
+  async #fetchMedia(path: string, signal: AbortSignal): Promise<Outcome<{ body: Buffer; mimeType: MediaMimeType; offline: boolean }>> {
+    const fetched = await this.#fetchImageResponse(path, 'image/jpeg,image/png,image/webp', signal);
+    if (!fetched.ok) return fetched;
+    const response = fetched.value;
     const mime = this.#hasMime(response, 'image/jpeg') ? 'image/jpeg'
       : this.#hasMime(response, 'image/png') ? 'image/png'
       : this.#hasMime(response, 'image/webp') ? 'image/webp' : undefined;
@@ -996,6 +1009,18 @@ export class FrigateClient {
     const offlineHeader = response.headers['x-frigate-offline'];
     const offline = (Array.isArray(offlineHeader) ? offlineHeader[0] ?? '' : offlineHeader ?? '').toString().toLowerCase() === 'true';
     return { ok: true, value: { body: response.body, mimeType: mime as MediaMimeType, offline } };
+  }
+
+  /** A preview GIF: the type must be `image/gif` and the bytes must start with a GIF signature (`GIF87a` or `GIF89a`). */
+  async #fetchGif(path: string, signal: AbortSignal): Promise<Outcome<Buffer>> {
+    const fetched = await this.#fetchImageResponse(path, 'image/gif', signal);
+    if (!fetched.ok) return fetched;
+    const { body } = fetched.value;
+    const signature = body.subarray(0, 6).toString('latin1');
+    if (!this.#hasMime(fetched.value, 'image/gif') || (signature !== 'GIF87a' && signature !== 'GIF89a')) {
+      return { ok: false, error: problem('malformed_response', 'Unexpected Frigate preview content type') };
+    }
+    return { ok: true, value: body };
   }
 
   async getLatestFrame(camera: string, cancellation?: AbortSignal): Promise<MediaOutcome<LatestFrameResult>> {
@@ -1088,6 +1113,55 @@ export class FrigateClient {
       };
       const warnings = ['The upstream does not report the capture time of this image; freshness is unknown'];
       return { result: eventImageOutputSchema.parse({ ok: true, data, meta: this.#metadata(warnings) }), media: media.value.body };
+    } finally {
+      if (admitted) this.#release();
+    }
+  }
+
+  async getEventPreviewGif(eventId: string, cancellation?: AbortSignal): Promise<MediaOutcome<EventPreviewGifResult>> {
+    const deadline = AbortSignal.timeout(this.#options.mediaTimeoutMs);
+    const signal = cancellation ? AbortSignal.any([cancellation, deadline]) : deadline;
+    const failure = (error: ReadError) =>
+      eventPreviewGifOutputSchema.parse({
+        ok: false,
+        error,
+        data: { kind: 'event_preview_gif', mimeType: 'image/gif', byteLength: 0, captureTime: 'unknown', retrievedAt: new Date().toISOString(), source: 'event_media' },
+        meta: this.#metadata([]),
+      });
+    if (!/^[A-Za-z0-9_.-]{1,64}$/.test(eventId) || eventId.includes('..')) {
+      return { result: failure(problem('invalid_request', 'Invalid event identifier')) };
+    }
+    const admitted = this.#admit();
+    try {
+      // Resolve the event camera first: a preview is only fetched for a permitted camera, and the event must exist.
+      const event = await this.#request(`events/${encodeURIComponent(eventId)}`, 'application/json', signal);
+      if (!event.ok) return { result: failure(event.error) };
+      if (event.value.status === 404) return { result: failure(problem('not_found', 'Frigate event not found; it may have expired', false, 404)) };
+      if (event.value.status !== 200) return { result: failure(this.#statusError(event.value.status)) };
+      let parsed: unknown;
+      try { parsed = JSON.parse(event.value.body.toString('utf8')); }
+      catch { return { result: failure(problem('malformed_response', 'Unexpected Frigate event response')) } };
+      const sanitized = this.#sanitizeEvent(parsed);
+      if (!sanitized.ok) return { result: failure(sanitized.error) };
+      if (this.#options.cameraScopeRestricted && !this.#options.cameras.includes(sanitized.value.camera)) {
+        return { result: failure(problem('forbidden', 'The event is outside the configured camera scope')) };
+      }
+      const media = await this.#fetchGif(`events/${encodeURIComponent(eventId)}/preview.gif`, signal);
+      if (!media.ok) {
+        // The event exists, so a 404 here means it has no preview, not that it expired.
+        return { result: failure(media.error.code === 'not_found' ? problem('media_unavailable', 'No preview GIF is available for this event', false, 404) : media.error) };
+      }
+      const data = {
+        camera: sanitized.value.camera,
+        kind: 'event_preview_gif' as const,
+        mimeType: 'image/gif' as const,
+        byteLength: media.value.length,
+        captureTime: 'unknown' as const,
+        retrievedAt: new Date().toISOString(),
+        source: 'event_media' as const,
+      };
+      const warnings = ['The upstream does not report the capture time of this preview; freshness is unknown'];
+      return { result: eventPreviewGifOutputSchema.parse({ ok: true, data, meta: this.#metadata(warnings) }), media: media.value };
     } finally {
       if (admitted) this.#release();
     }

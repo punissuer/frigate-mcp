@@ -4,7 +4,7 @@
 
 The user approved the spec, test boundary, and nine-ticket implementation breakdown. All nine tickets were published to [punissuer/frigate-mcp](https://github.com/punissuer/frigate-mcp/issues) with `ready-for-agent` labels and native GitHub blocking relationships.
 
-**Issues #1 through #9 are implemented, committed, and pushed to `main`.** A follow-up release (1.1.0) added self-signed certificate support and the Hermes installation guide after a live deployment attempt exposed two gaps: a self-signed `CN = *` certificate cannot pass a hostname check, and TLS failures were reported as a generic "unable to reach Frigate". The working tree is clean. The read-only v1 surface is complete: fourteen read-only tools over stdio and Streamable HTTP, with durable restart/replay acceptance.
+**Issues #1 through #9 are implemented, committed, and pushed to `main`.** A follow-up release (1.1.0) added self-signed certificate support and the Hermes installation guide after a live deployment attempt exposed two gaps: a self-signed `CN = *` certificate cannot pass a hostname check, and TLS failures were reported as a generic "unable to reach Frigate". The working tree is clean. The read-only v1 surface is complete: fifteen read-only tools over stdio and Streamable HTTP, with durable restart/replay acceptance.
 
 The user reported: “afaict it works.” This is positive feedback, not a recorded live-Frigate test result. No live NVR or provider credentials were used by the assistant.
 
@@ -56,6 +56,7 @@ Camera scope (issue #2):
 
 - `get_latest_frame({ camera })` fetches `GET /{camera}/latest.jpg` as a bounded MCP image block plus small metadata. The upstream reports no capture time, so `captureTime` is `unknown` and the retrieval time is reported separately; an offline camera is reported as `source: preview_fallback` instead of a live view.
 - `get_event_image({ eventId, kind })` fetches an event snapshot or thumbnail. The event camera is resolved and scope-checked before any media is requested, and a missing snapshot, a missing/expired event, and a wrong MIME type are distinct outcomes.
+- `get_event_preview_gif({ eventId })` fetches an event's animated preview (`GET /events/{event_id}/preview.gif`) as a bounded `image/gif` block plus small metadata. The event camera is resolved and scope-checked before any media is requested. The bytes must carry a GIF signature (`GIF87a` or `GIF89a`) and an `image/gif` type, a missing preview is `media_unavailable`, and a missing or expired event is `not_found`; the upstream reports no capture time, so freshness is `unknown`, as for the still.
 
 Image bytes never enter a structured result, are never printed with `text()`, and are never logged; the bridge keeps the image block inside the preserved MCP content array so a script can select it and forward it with code mode's `image()`.
 
