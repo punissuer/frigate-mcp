@@ -1,6 +1,6 @@
 {
   "name": "frigate-mcp",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "description": "Read-only Frigate MCP tools with an optional pi-durable code-mode bridge",
   "type": "module",
   "license": "MIT",
@@ -44,8 +44,9 @@
     "zod": "4.6.7"
   },
   "peerDependencies": {
-    "@earendil-works/pi-durable": "1.4.0",
-    "@earendil-works/pi-ai": "1.4.0"
+    "@earendil-works/pi-durable": "1.5.0",
+    "@earendil-works/pi-ai": "1.5.0",
+    "@earendil-works/pi-schema": "1.5.0"
   },
   "peerDependenciesMeta": {
     "@earendil-works/pi-durable": {
@@ -53,13 +54,17 @@
     },
     "@earendil-works/pi-ai": {
       "optional": true
+    },
+    "@earendil-works/pi-schema": {
+      "optional": true
     }
   },
   "devDependencies": {
-    "@earendil-works/chord": "1.4.0",
-    "@earendil-works/pi-ai": "1.4.0",
-    "@earendil-works/pi-codemode": "1.4.0",
-    "@earendil-works/pi-durable": "1.4.0",
+    "@earendil-works/chord": "1.5.0",
+    "@earendil-works/pi-ai": "1.5.0",
+    "@earendil-works/pi-codemode": "1.5.0",
+    "@earendil-works/pi-durable": "1.5.0",
+    "@earendil-works/pi-schema": "1.5.0",
     "@types/node": "24.12.0",
     "tsx": "4.23.15",
     "typescript": "5.9.3"

@@ -3,7 +3,7 @@ import { CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport, type StdioServerParameters } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { Type } from '@earendil-works/pi-ai';
+import { arr, bool, num, obj, opt, str, unknown, type Schema } from '@earendil-works/pi-schema';
 import { defineExtension, defineTool, type JsonObject } from '@earendil-works/pi-durable';
 import { toolManifests, toolOutputSchemas, type ToolName } from './contract.js';
 
@@ -15,75 +15,75 @@ export const frigateNamespace = {
 
 const TOOL_NAMES = Object.keys(toolManifests) as ToolName[];
 
-const envelopeSchema = (outputSchema: Record<string, unknown>) => Type.Object({
-  content: Type.Array(Type.Unknown(), { maxItems: 8 }),
-  structuredContent: Type.Optional(Type.Unsafe(outputSchema)),
-  isError: Type.Optional(Type.Boolean()),
-}, { additionalProperties: true });
+const envelopeSchema = (outputSchema: Record<string, unknown>) => obj({
+  content: arr(unknown(), { maxItems: 8 }),
+  structuredContent: opt(outputSchema as Schema),
+  isError: opt(bool()),
+}, { open: true });
 
 /** Durable-side arguments. Credentials, URLs, and camera scope stay operator-side. */
 const toolParameters = {
-  get_system_status: Type.Object({}, { additionalProperties: false }),
-  list_cameras: Type.Object({ camera: Type.Optional(Type.String()) }, { additionalProperties: false }),
-  get_capabilities: Type.Object({}, { additionalProperties: false }),
-  list_events: Type.Object({
-    after: Type.Number(),
-    before: Type.Number(),
-    cameras: Type.Optional(Type.Array(Type.String())),
-    labels: Type.Optional(Type.Array(Type.String())),
-    subLabels: Type.Optional(Type.Array(Type.String())),
-    zones: Type.Optional(Type.Array(Type.String())),
-    hasClip: Type.Optional(Type.Boolean()),
-    hasSnapshot: Type.Optional(Type.Boolean()),
-    inProgress: Type.Optional(Type.Boolean()),
-    minScore: Type.Optional(Type.Number()),
-    maxScore: Type.Optional(Type.Number()),
-    limit: Type.Optional(Type.Number()),
-    offset: Type.Optional(Type.Number()),
-    sort: Type.Optional(Type.String()),
-  }, { additionalProperties: false }),
-  get_event: Type.Object({ eventId: Type.String() }, { additionalProperties: false }),
-  search_events: Type.Object({
-    query: Type.String(),
-    after: Type.Number(),
-    before: Type.Number(),
-    cameras: Type.Optional(Type.Array(Type.String())),
-    labels: Type.Optional(Type.Array(Type.String())),
-    subLabels: Type.Optional(Type.Array(Type.String())),
-    zones: Type.Optional(Type.Array(Type.String())),
-    searchType: Type.Optional(Type.String()),
-    limit: Type.Optional(Type.Number()),
-    offset: Type.Optional(Type.Number()),
-  }, { additionalProperties: false }),
-  list_review_items: Type.Object({
-    after: Type.Number(),
-    before: Type.Number(),
-    cameras: Type.Optional(Type.Array(Type.String())),
-    labels: Type.Optional(Type.Array(Type.String())),
-    zones: Type.Optional(Type.Array(Type.String())),
-    severity: Type.Optional(Type.String()),
-    reviewed: Type.Optional(Type.Boolean()),
-    limit: Type.Optional(Type.Number()),
-  }, { additionalProperties: false }),
-  get_review_item: Type.Object({ reviewId: Type.String() }, { additionalProperties: false }),
-  get_recording_summary: Type.Object({ camera: Type.String() }, { additionalProperties: false }),
-  list_recordings: Type.Object({
-    camera: Type.String(),
-    after: Type.Number(),
-    before: Type.Number(),
-  }, { additionalProperties: false }),
-  get_latest_frame: Type.Object({ camera: Type.String() }, { additionalProperties: false }),
-  get_event_image: Type.Object({
-    eventId: Type.String(),
-    kind: Type.Optional(Type.String()),
-  }, { additionalProperties: false }),
-  get_event_preview_gif: Type.Object({ eventId: Type.String() }, { additionalProperties: false }),
-  get_event_clip: Type.Object({ eventId: Type.String() }, { additionalProperties: false }),
-  get_recording_clip: Type.Object({
-    camera: Type.String(),
-    start: Type.Number(),
-    end: Type.Number(),
-  }, { additionalProperties: false }),
+  get_system_status: obj({}),
+  list_cameras: obj({ camera: opt(str()) }),
+  get_capabilities: obj({}),
+  list_events: obj({
+    after: num(),
+    before: num(),
+    cameras: opt(arr(str())),
+    labels: opt(arr(str())),
+    subLabels: opt(arr(str())),
+    zones: opt(arr(str())),
+    hasClip: opt(bool()),
+    hasSnapshot: opt(bool()),
+    inProgress: opt(bool()),
+    minScore: opt(num()),
+    maxScore: opt(num()),
+    limit: opt(num()),
+    offset: opt(num()),
+    sort: opt(str()),
+  }),
+  get_event: obj({ eventId: str() }),
+  search_events: obj({
+    query: str(),
+    after: num(),
+    before: num(),
+    cameras: opt(arr(str())),
+    labels: opt(arr(str())),
+    subLabels: opt(arr(str())),
+    zones: opt(arr(str())),
+    searchType: opt(str()),
+    limit: opt(num()),
+    offset: opt(num()),
+  }),
+  list_review_items: obj({
+    after: num(),
+    before: num(),
+    cameras: opt(arr(str())),
+    labels: opt(arr(str())),
+    zones: opt(arr(str())),
+    severity: opt(str()),
+    reviewed: opt(bool()),
+    limit: opt(num()),
+  }),
+  get_review_item: obj({ reviewId: str() }),
+  get_recording_summary: obj({ camera: str() }),
+  list_recordings: obj({
+    camera: str(),
+    after: num(),
+    before: num(),
+  }),
+  get_latest_frame: obj({ camera: str() }),
+  get_event_image: obj({
+    eventId: str(),
+    kind: opt(str()),
+  }),
+  get_event_preview_gif: obj({ eventId: str() }),
+  get_event_clip: obj({ eventId: str() }),
+  get_recording_clip: obj({
+    camera: str(),
+    start: num(),
+    end: num(),
+  }),
 } as const;
 
 /** Tools that answer with a bounded image block plus structured metadata. */
