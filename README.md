@@ -275,7 +275,7 @@ The fixture contract was checked against **Frigate v0.18.2** tagged source:
 
 `0.18.2` and its hexadecimal commit-suffixed builds are classified `supported` **for the status and discovery contracts only**. Older pre-0.18 releases are classified `unsupported`; other versions/build formats are `unknown`. Probes may still succeed on untested versions, but the result explicitly warns about compatibility. This is source/fixture contract testing, **not live-NVR certification**, and does not establish support for future tools.
 
-Exact tested dependency versions are locked: MCP SDK **1.32.2**, Zod **4.6.7**, pi-durable/pi-ai/pi-codemode/Chord **1.4.0**. The server entry point never imports durable; the bridge's durable and pi-ai peers are optional for ordinary MCP users.
+Exact tested dependency versions are locked: MCP SDK **1.32.2**, Zod **4.6.7**, pi-durable/pi-ai/pi-codemode/pi-schema/Chord **1.5.0**. The server entry point never imports durable; the bridge's durable, pi-ai and pi-schema peers are optional for ordinary MCP users.
 
 ## pi-durable integration
 
@@ -284,7 +284,7 @@ A complete, runnable host is in [`examples/pi-durable-host.ts`](examples/pi-dura
 surface, image and clip forwarding, restart/replay, and troubleshooting — is in
 [docs/PI_DURABLE.md](docs/PI_DURABLE.md).
 
-Install the optional durable peers at **1.4.0** in the host application, along with pi-codemode and Chord. Pi CLI's `mcp.json` alone does not register tools in a pi-durable harness.
+Install the optional durable peers at **1.5.0** in the host application (pi-durable, pi-ai and pi-schema), along with pi-codemode and Chord. Pi CLI's `mcp.json` alone does not register tools in a pi-durable harness.
 
 ```ts
 import { connectFrigateStdio, frigateNamespace } from 'frigate-mcp/durable';

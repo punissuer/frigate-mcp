@@ -27,8 +27,8 @@ also runs from the published package. In a host project:
 
 ```sh
 npm install frigate-mcp                       # or: npm install github:punissuer/frigate-mcp
-npm install @earendil-works/pi-durable@1.4.0 @earendil-works/pi-ai@1.4.0 \
-            @earendil-works/pi-codemode@1.4.0 @earendil-works/chord@1.4.0
+npm install @earendil-works/pi-durable@1.5.0 @earendil-works/pi-ai@1.5.0 \
+            @earendil-works/pi-schema@1.5.0 @earendil-works/pi-codemode@1.5.0 @earendil-works/chord@1.5.0
 npx tsx node_modules/frigate-mcp/examples/pi-durable-host.ts
 ```
 
@@ -50,8 +50,8 @@ In the **host application**, install the optional durable peers at the tested
 versions:
 
 ```sh
-npm install @earendil-works/pi-durable@1.4.0 @earendil-works/pi-ai@1.4.0 \
-            @earendil-works/pi-codemode@1.4.0 @earendil-works/chord@1.4.0
+npm install @earendil-works/pi-durable@1.5.0 @earendil-works/pi-ai@1.5.0 \
+            @earendil-works/pi-schema@1.5.0 @earendil-works/pi-codemode@1.5.0 @earendil-works/chord@1.5.0
 ```
 
 `frigate-mcp` itself declares those as optional peers, so an ordinary MCP
